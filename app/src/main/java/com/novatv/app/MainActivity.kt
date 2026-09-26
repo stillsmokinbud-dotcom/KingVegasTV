@@ -50,6 +50,16 @@ sealed interface Screen {
     data object GetPremium : Screen
     data class Info(val title: String, val text: String) : Screen
     data class Player(val channelId: String) : Screen
+    data class Vod(val kind: com.novatv.app.playlist.VodKind) : Screen
+    data class MovieDetails(val item: com.novatv.app.playlist.VodItem) : Screen
+    data class Series(val item: com.novatv.app.playlist.VodItem) : Screen
+    /** Movie or episodes: (resume key, url) list, titles, where to start. */
+    data class VodPlayer(
+        val items: List<Pair<String, String>>,
+        val titles: List<String>,
+        val start: Int,
+        val fromStart: Boolean,
+    ) : Screen
 }
 
 class MainActivity : ComponentActivity() {
@@ -107,8 +117,12 @@ private fun AppRoot(settings: AppSettings, onFinish: () -> Unit) {
                 push(Screen.Player(last.id))
             }
         }
+        app.vod.loadCache()
+        // Let the first screen settle before heavy downloads start (smooth first launch).
+        delay(2500)
         app.playlists.refreshDue(appStart = true)
         app.appScope.launch { app.epg.updateIfDue(appStart = true) }
+        app.appScope.launch { runCatching { app.vod.refreshIfStale() } }
     }
 
     fun openSettings(page: String? = null) {
@@ -133,8 +147,8 @@ private fun AppRoot(settings: AppSettings, onFinish: () -> Unit) {
         when (dest) {
             MenuDest.GUIDE -> while (stack.size > 1) pop()
             MenuDest.SEARCH -> push(Screen.Search)
-            MenuDest.MOVIES -> push(Screen.Info("Movies", "No movies yet. Movies from your Xtream Codes playlist are coming in the next update."))
-            MenuDest.SHOWS -> push(Screen.Info("Shows", "No shows yet. Series from your Xtream Codes playlist are coming in the next update."))
+            MenuDest.MOVIES -> push(Screen.Vod(com.novatv.app.playlist.VodKind.MOVIES))
+            MenuDest.SHOWS -> push(Screen.Vod(com.novatv.app.playlist.VodKind.SHOWS))
             MenuDest.RECORDINGS -> push(Screen.Info("Recordings", "No recordings"))
             MenuDest.MY_TV_PROGRAMS -> push(Screen.Info("My TV programs", "No programs"))
             MenuDest.MY_REMINDERS -> push(Screen.Info("My reminders", "No reminders"))
@@ -177,6 +191,18 @@ private fun AppRoot(settings: AppSettings, onFinish: () -> Unit) {
                     else -> Unit
                 }
             }
+            is Screen.Vod -> com.novatv.app.ui.VodBrowseScreen(screen.kind) { item ->
+                push(if (screen.kind == com.novatv.app.playlist.VodKind.MOVIES) Screen.MovieDetails(item) else Screen.Series(item))
+            }
+            is Screen.MovieDetails -> com.novatv.app.ui.MovieDetailsScreen(screen.item) { fromStart ->
+                push(Screen.VodPlayer(listOf(screen.item.id to screen.item.url), listOf(screen.item.name), 0, fromStart))
+            }
+            is Screen.Series -> com.novatv.app.ui.SeriesScreen(screen.item) { eps, i ->
+                push(Screen.VodPlayer(eps.map { it.id to it.url },
+                    eps.map { "${screen.item.name} · S${it.season} E${it.number} · ${it.title}" }, i, false))
+            }
+            is Screen.VodPlayer -> com.novatv.app.ui.VodPlayerScreen(settings, screen.items, screen.titles, screen.start,
+                screen.fromStart, onExit = ::pop)
             is Screen.Player -> PlayerScreen(settings, screen.channelId, onExit = ::pop,
                 onNavigate = { d -> pop(); navigate(d) },
                 onFinishApp = onFinish)
