@@ -157,8 +157,8 @@ private fun AppRoot(settings: AppSettings, onFinish: () -> Unit) {
                 onNavigate = ::navigate,
                 onAddPlaylist = { push(Screen.AddPlaylist(null)) },
             )
-            Screen.Premium -> PremiumAccountScreen(settings)
-            Screen.GetPremium -> GetPremiumScreen()
+            Screen.Premium -> PremiumAccountScreen(settings, onClose = ::pop)
+            Screen.GetPremium -> GetPremiumScreen(onClose = ::pop)
             Screen.Search -> SearchScreen(settings) { queue, channel ->
                 app.playQueue = queue
                 push(Screen.Player(channel.id))
