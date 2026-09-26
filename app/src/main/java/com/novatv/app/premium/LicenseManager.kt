@@ -38,6 +38,19 @@ data class Account(
 )
 
 @Serializable
+data class PreviewDevice(val id: Int, val name: String, val lastSeen: Long = 0)
+
+/** What the server tells us after "Log in" / "Sign up", before this device is activated. */
+@Serializable
+data class AccountPreview(
+    val email: String,
+    val admin: Boolean = false,
+    val premium: Boolean = false,
+    val deviceLimit: Int = 10,
+    val devices: List<PreviewDevice> = emptyList(),
+)
+
+@Serializable
 data class Plan(val id: String, val price: Int)
 
 @Serializable
@@ -59,7 +72,8 @@ class LicenseManager(
     val account: StateFlow<Account?> = _account.asStateFlow()
 
     suspend fun serverUrl(): String =
-        settings.current().str("premium.server_url").trim().ifBlank { BuildConfig.LICENSE_SERVER_URL }.trimEnd('/')
+        settings.current().str("premium.server_url").trim().ifBlank { BuildConfig.LICENSE_SERVER_URL.trim() }
+            .ifBlank { DEFAULT_SERVER }.let { if (it.startsWith("http")) it else "https://$it" }.trimEnd('/')
 
     suspend fun buyUrl(): String = _account.value?.buyUrl?.takeIf { it.isNotBlank() } ?: "${serverUrl()}/account"
 
@@ -80,14 +94,37 @@ class LicenseManager(
         applyPremium()
     }
 
-    suspend fun signIn(email: String, password: String): Result<Account> = withContext(Dispatchers.IO) {
+    /** Step 1 of TiviMate-style activation: check email + password and list the account's devices. */
+    suspend fun check(email: String, password: String): Result<AccountPreview> = preview("check", email, password)
+
+    /** "Sign up" on the TV: creates a free account, then continues to activation. */
+    suspend fun signUp(email: String, password: String): Result<AccountPreview> = preview("signup", email, password)
+
+    private suspend fun preview(path: String, email: String, password: String): Result<AccountPreview> = withContext(Dispatchers.IO) {
         runCatching {
             val body = json.encodeToString(JsonObject.serializer(), JsonObject(mapOf(
                 "email" to kotlinx.serialization.json.JsonPrimitive(email.trim()),
                 "password" to kotlinx.serialization.json.JsonPrimitive(password),
-                "deviceId" to kotlinx.serialization.json.JsonPrimitive(deviceId()),
-                "deviceName" to kotlinx.serialization.json.JsonPrimitive(deviceName()),
             )))
+            val obj = call(Request.Builder().url("${serverUrl()}/api/$path").post(body.toRequestBody(JSON_TYPE)))
+            json.decodeFromJsonElement(AccountPreview.serializer(), obj)
+        }
+    }
+
+    /**
+     * Step 2 ("Activate"): signs this device in under [deviceName], or takes over the existing
+     * device [restoreId] from "Your devices" (e.g. after reinstalling the app).
+     */
+    suspend fun signIn(email: String, password: String, name: String = "", restoreId: Int? = null): Result<Account> = withContext(Dispatchers.IO) {
+        runCatching {
+            val fields = mutableMapOf<String, kotlinx.serialization.json.JsonElement>(
+                "email" to kotlinx.serialization.json.JsonPrimitive(email.trim()),
+                "password" to kotlinx.serialization.json.JsonPrimitive(password),
+                "deviceId" to kotlinx.serialization.json.JsonPrimitive(deviceId()),
+                "deviceName" to kotlinx.serialization.json.JsonPrimitive(name.ifBlank { deviceName() }),
+            )
+            if (restoreId != null) fields["restoreId"] = kotlinx.serialization.json.JsonPrimitive(restoreId)
+            val body = json.encodeToString(JsonObject.serializer(), JsonObject(fields))
             val obj = call(Request.Builder().url("${serverUrl()}/api/login").post(body.toRequestBody(JSON_TYPE)))
             val token = obj["token"]?.jsonPrimitive?.content ?: throw IOException("Unexpected server reply")
             settings.set(KEY_TOKEN, token)
@@ -179,6 +216,7 @@ class LicenseManager(
         private const val KEY_TOKEN = "data.license_token"
         private const val KEY_ACCOUNT = "data.license_account"
         private const val KEY_DEVICE = "data.device_id"
+        const val DEFAULT_SERVER = "https://kingvegastv-server.onrender.com"
         private const val OFFLINE_GRACE_MS = 14L * 24 * 3600 * 1000
         private val JSON_TYPE = "application/json".toMediaType()
     }
