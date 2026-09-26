@@ -13,6 +13,8 @@ import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.decodeFromStream
+import kotlinx.serialization.json.encodeToStream
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -111,7 +113,9 @@ class VodRepository(
     }
 
     /** Download movies and series for every enabled Xtream playlist (or just [onlyId]). */
-    suspend fun refresh(onlyId: String? = null): Result<Int> = lock.withLock {
+    suspend fun refresh(onlyId: String? = null): Result<Int> = lock.withLock { refreshLocked(onlyId) }
+
+    private suspend fun refreshLocked(onlyId: String? = null): Result<Int> =
         withContext(Dispatchers.IO) {
             val targets = playlists.readPlaylists().filter { it.enabled && (onlyId == null || it.id == onlyId) }
             var total = 0
@@ -124,7 +128,7 @@ class VodRepository(
                     val ua = p.userAgent.ifBlank { DEFAULT_USER_AGENT }
                     val movies = loadMovies(p, login, ua)
                     val series = loadSeries(p, login, ua)
-                    cacheFile(p.id).writeText(json.encodeToString(VodCache.serializer(), VodCache(movies, series, System.currentTimeMillis())))
+                    writeCacheFile(p.id, VodCache(movies, series, System.currentTimeMillis()))
                     total += movies.size + series.size
                 } catch (e: Exception) {
                     errors += "${p.name}: ${e.message ?: e.javaClass.simpleName}"
@@ -134,14 +138,15 @@ class VodRepository(
             loadCache()
             if (total == 0 && errors.isNotEmpty()) Result.failure(IOException(errors.joinToString("\n"))) else Result.success(total)
         }
-    }
 
     /** Refresh when there is no cache yet or it's older than a day. */
-    suspend fun refreshIfStale() {
-        val stale = playlists.readPlaylists().filter { it.enabled }.any { p ->
-            loginFor(p) != null && (readCache(p.id)?.updated ?: 0L) < System.currentTimeMillis() - 24 * 3_600_000L
+    suspend fun refreshIfStale() = lock.withLock {
+        val stale = withContext(Dispatchers.IO) {
+            playlists.readPlaylists().filter { it.enabled && it.includeVod }.any { p ->
+                loginFor(p) != null && (readCache(p.id)?.updated ?: 0L) < System.currentTimeMillis() - 24 * 3_600_000L
+            }
         }
-        if (stale) refresh()
+        if (stale) refreshLocked()
     }
 
     fun deleteCache(playlistId: String) { cacheFile(playlistId).delete() }
@@ -192,8 +197,12 @@ class VodRepository(
         // Finished (last 3%) -> start from the beginning next time.
         if (durationMs > 0 && positionMs > durationMs * 97 / 100) m.remove(key) else if (positionMs > 10_000) m[key] = positionMs
         resume = m
-        runCatching { resumeFile.writeText(json.encodeToString(resumeSer, m)) }
+        val snapshot = m.toMap()
+        // Write on a background thread so the player never stutters on slow storage.
+        ioExecutor.execute { synchronized(resumeSer) { runCatching { resumeFile.writeText(json.encodeToString(resumeSer, snapshot)) } } }
     }
+
+    private val ioExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
 
     private fun resumeMap(): Map<String, Long> = resume ?: runCatching {
         json.decodeFromString(resumeSer, resumeFile.readText())
@@ -225,7 +234,7 @@ class VodRepository(
                 url = "${l.base}/movie/${l.user}/${l.pass}/$id.$ext",
                 added = o["added"].str()?.toLongOrNull()?.times(1000) ?: 0,
             )
-        }
+        }.distinctBy { it.id }
     }
 
     private fun loadSeries(p: Playlist, l: Login, ua: String): List<VodItem> {
@@ -245,19 +254,31 @@ class VodRepository(
                 seriesId = id,
                 added = o["last_modified"].str()?.toLongOrNull()?.times(1000) ?: 0,
             )
-        }
+        }.distinctBy { it.id }
     }
 
-    private fun readCache(id: String): VodCache? = cacheFile(id).takeIf { it.exists() }?.let {
-        runCatching { json.decodeFromString(VodCache.serializer(), it.readText()) }.getOrNull()
+    @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+    private fun readCache(id: String): VodCache? = cacheFile(id).takeIf { it.exists() }?.let { f ->
+        runCatching { f.inputStream().buffered().use { json.decodeFromStream(VodCache.serializer(), it) } }.getOrNull()
     }
 
+    @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+    private fun writeCacheFile(id: String, cache: VodCache) {
+        val tmp = File(cacheFile(id).path + ".tmp")
+        tmp.outputStream().buffered().use { json.encodeToStream(VodCache.serializer(), cache, it) }
+        tmp.renameTo(cacheFile(id))
+    }
+
+    @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
     private fun get(url: String, ua: String): JsonElement {
         val req = Request.Builder().url(url).header("User-Agent", ua).build()
         http.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) throw IOException("Server returned ${resp.code}")
-            val body = resp.body?.string().orEmpty()
-            return json.parseToJsonElement(body.ifBlank { "[]" })
+            val body = resp.body ?: return JsonArray(emptyList())
+            if (body.contentLength() == 0L) return JsonArray(emptyList())
+            // Streamed: big providers return tens of MB of movies; no giant String in memory.
+            return runCatching { body.byteStream().use { json.decodeFromStream(JsonElement.serializer(), it) } }
+                .getOrElse { JsonArray(emptyList()) }
         }
     }
 
