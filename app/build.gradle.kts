@@ -18,7 +18,7 @@ android {
         versionName = "0.1." + (System.getenv("GITHUB_RUN_NUMBER") ?: "0")
         // Address of your license server (the /server folder). Can also be changed in
         // Settings › Premium account › Account server.
-        val serverUrl = System.getenv("NOVATV_SERVER_URL") ?: "https://your-server.example.com"
+        val serverUrl = System.getenv("NOVATV_SERVER_URL")?.takeIf { it.isNotBlank() } ?: "https://kingvegastv-server.onrender.com"
         buildConfigField("String", "LICENSE_SERVER_URL", "\"$serverUrl\"")
     }
 
