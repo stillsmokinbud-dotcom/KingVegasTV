@@ -1,9 +1,8 @@
-# Test signing key
+# Signing
 
-`test-key.p12.b64` is a **public test key** (password `kingvegas-test`, alias `test`).
-GitHub Actions uses it when the repo has no `KEYSTORE_BASE64` secret, so every build is
-signed with the same key and installs as an update over the previous one.
+Builds are signed with the private key from Documents\NovaTV-signing, passed to GitHub Actions
+through the repository secrets KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS and KEY_PASSWORD.
+The key itself is never stored in this repository.
 
-Because it is public, anyone could sign an app with it. Before you sell the app, add your
-private key from Documents\NovaTV-signing as repository secrets (see SETUP.md). Switching
-keys means uninstalling the test build once.
+`test-key.p12.b64` is a **public test key** (password `kingvegas-test`, alias `test`). It is only used
+if those secrets are missing, so builds still install as updates of each other.
