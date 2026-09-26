@@ -173,12 +173,41 @@ function authFromRequest(req) {
 }
 
 // ================================================================== APP API
+// Step 1 on the TV (TiviMate-style "Log in" / "Sign up"): check the account and list its devices
+// so the user can activate a new device or restore an existing one.
+function devicePreview(u) {
+  const devices = db.prepare('SELECT id, name, last_seen FROM devices WHERE user_id = ? ORDER BY last_seen DESC').all(u.id);
+  return { email: u.email, admin: isAdmin(u), premium: isPremium(u), deviceLimit: DEVICE_LIMIT,
+    devices: devices.map(d => ({ id: d.id, name: d.name, lastSeen: d.last_seen })) };
+}
+app.post('/api/check', (req, res) => {
+  if (rateLimited(req.ip)) return res.status(429).json({ error: 'Too many attempts. Try again in 15 minutes.' });
+  const { email, password } = req.body || {};
+  const u = userByEmail(email);
+  if (!u || !checkPassword(String(password || ''), u.pass)) return res.status(401).json({ error: 'Wrong email or password.' });
+  res.json(devicePreview(u));
+});
+app.post('/api/signup', (req, res) => {
+  if (rateLimited(req.ip)) return res.status(429).json({ error: 'Too many attempts. Try again in 15 minutes.' });
+  const { email, password } = req.body || {};
+  try { res.json(devicePreview(createUser(email, password))); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 app.post('/api/login', (req, res) => {
   if (rateLimited(req.ip)) return res.status(429).json({ error: 'Too many attempts. Try again in 15 minutes.' });
-  const { email, password, deviceId, deviceName } = req.body || {};
+  const { email, password, deviceId, deviceName, restoreId } = req.body || {};
   const u = userByEmail(email);
   if (!u || !checkPassword(String(password || ''), u.pass)) return res.status(401).json({ error: 'Wrong email or password.' });
   if (!deviceId) return res.status(400).json({ error: 'Missing device id.' });
+  // "Your devices": restore an existing activation on this device (e.g. after reinstalling).
+  const restore = restoreId ? db.prepare('SELECT * FROM devices WHERE id = ? AND user_id = ?').get(+restoreId, u.id) : null;
+  if (restore && restore.device_id !== deviceId) {
+    db.prepare('DELETE FROM devices WHERE user_id = ? AND device_id = ?').run(u.id, deviceId);
+    db.prepare('DELETE FROM tokens WHERE user_id = ? AND device_id = ?').run(u.id, restore.device_id);
+    db.prepare('UPDATE devices SET device_id = ?, name = ?, last_seen = ? WHERE id = ?')
+      .run(deviceId, String(deviceName || restore.name).slice(0, 60), Date.now(), restore.id);
+  }
   const existing = db.prepare('SELECT * FROM devices WHERE user_id = ? AND device_id = ?').get(u.id, deviceId);
   if (!existing) {
     const count = db.prepare('SELECT COUNT(*) AS n FROM devices WHERE user_id = ?').get(u.id).n;
