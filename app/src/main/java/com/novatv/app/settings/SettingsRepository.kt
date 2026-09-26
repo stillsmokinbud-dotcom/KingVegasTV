@@ -25,6 +25,7 @@ object DataKeys {
     const val RECENT = "data.recent"
     const val LAST_CHANNEL = "data.last_channel"
     const val MENU_ORDER = "data.menu_order"
+    const val LAST_GROUP = "data.last_group"
 }
 
 /** Typed, read-only view of all settings, with schema defaults filled in. */
