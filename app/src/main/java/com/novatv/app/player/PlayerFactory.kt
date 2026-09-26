@@ -13,6 +13,9 @@ import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.mediacodec.MediaCodecUtil
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
+import androidx.media3.extractor.DefaultExtractorsFactory
+import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory
+import androidx.media3.extractor.ts.TsExtractor
 import com.novatv.app.settings.AppSettings
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
@@ -39,6 +42,11 @@ class PlayerFactory(private val context: Context, private val baseHttp: OkHttpCl
 
         val trackSelector = DefaultTrackSelector(context).apply {
             val b = buildUponParameters()
+                // 4K: don't cap the video at the TV's UI size (Android TV draws its UI at 1080p
+                // even on 4K sets, which would otherwise hold streams back to 1080p).
+                .clearViewportSizeConstraints()
+                .setExceedVideoConstraintsIfNecessary(true)
+                .setExceedRendererCapabilitiesIfNecessary(true)
                 .setTunnelingEnabled(s.bool("playback.tunneling"))
                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !s.bool("playback.subtitles"))
             if (s.bool("playback.surround")) b.setPreferredAudioMimeTypes(
@@ -51,7 +59,7 @@ class PlayerFactory(private val context: Context, private val baseHttp: OkHttpCl
         val player = ExoPlayer.Builder(context, renderers)
             .setTrackSelector(trackSelector)
             .setLoadControl(loadControl(s.str("playback.buffer")))
-            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSource))
+            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSource, extractors()))
             .build()
 
         // Auto frame rate: ask the display to match the video's frame rate when it can do so seamlessly.
@@ -72,6 +80,18 @@ class PlayerFactory(private val context: Context, private val baseHttp: OkHttpCl
             val filtered = if (mode == "sw") all.filter { it.softwareOnly } else all.sortedBy { if (it.hardwareAccelerated) 0 else 1 }
             filtered.ifEmpty { all }
         }
+
+    /**
+     * IPTV MPEG-TS streams (Xtream ".ts" links) often start mid-GOP, repeat or skip timestamps and
+     * mark keyframes badly. These flags stop the picture freezing while the sound keeps playing.
+     */
+    private fun extractors() = DefaultExtractorsFactory()
+        .setTsExtractorFlags(
+            DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES or
+                DefaultTsPayloadReaderFactory.FLAG_DETECT_ACCESS_UNITS
+        )
+        .setTsExtractorTimestampSearchBytes(1500 * TsExtractor.TS_PACKET_SIZE)
+        .setConstantBitrateSeekingEnabled(true)
 
     private fun loadControl(size: String): DefaultLoadControl {
         // min, max, bufferForPlayback, bufferForPlaybackAfterRebuffer (ms)
@@ -99,7 +119,7 @@ class PlayerFactory(private val context: Context, private val baseHttp: OkHttpCl
             val b = MediaItem.Builder().setUri(Uri.parse(url))
             if (url.contains(".m3u8", ignoreCase = true)) b.setMimeType(MimeTypes.APPLICATION_M3U8)
             // Live streams: let the player fall behind a little instead of stalling.
-            b.setLiveConfiguration(MediaItem.LiveConfiguration.Builder().setMaxPlaybackSpeed(1.02f).build())
+            b.setLiveConfiguration(MediaItem.LiveConfiguration.Builder().setMinPlaybackSpeed(1f).setMaxPlaybackSpeed(1f).build())
             return b.build()
         }
     }
