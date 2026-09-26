@@ -1,0 +1,12 @@
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+captures/
+.DS_Store
+server/node_modules/
+server/data/
+server/.env
+*.jks
+*.keystore
