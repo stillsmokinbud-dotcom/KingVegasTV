@@ -29,9 +29,10 @@ android {
         if (keystorePath != null && file(keystorePath).exists()) {
             create("release") {
                 storeFile = file(keystorePath)
-                storePassword = System.getenv("NOVATV_KEYSTORE_PASSWORD")
-                keyAlias = System.getenv("NOVATV_KEY_ALIAS")
-                keyPassword = System.getenv("NOVATV_KEY_PASSWORD")
+                val test = System.getenv("NOVATV_TEST_KEY") == "1"
+                storePassword = if (test) "kingvegas-test" else System.getenv("NOVATV_KEYSTORE_PASSWORD")
+                keyAlias = if (test) "test" else System.getenv("NOVATV_KEY_ALIAS")
+                keyPassword = if (test) "kingvegas-test" else System.getenv("NOVATV_KEY_PASSWORD")
             }
         }
     }
