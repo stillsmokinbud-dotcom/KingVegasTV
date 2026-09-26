@@ -104,7 +104,7 @@ fun PlayerScreen(
     var peekIndex by remember { mutableStateOf<Int?>(null) }
     var stopped by remember { mutableStateOf(false) }
     var paywall by remember { mutableStateOf<String?>(null) }
-    val favorites by app.settings.listFlow(DataKeys.FAVORITES).collectAsState(initial = emptyList())
+    val favorites by remember(DataKeys.FAVORITES) { app.settings.listFlow(DataKeys.FAVORITES) }.collectAsState(initial = emptyList())
     val epg by app.epg.data.collectAsState()
     val rootFocus = remember { FocusRequester() }
 
@@ -225,6 +225,8 @@ fun PlayerScreen(
 
     val audio = remember { context.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager }
 
+    val playUrl = LocalPlayUrl.current
+    val openMultiview = LocalOpenMultiview.current
     fun action(a: String) {
         fun premiumOr(feature: String, block: () -> Unit) { if (settings.premium) block() else paywall = feature }
         when (a) {
@@ -246,7 +248,13 @@ fun PlayerScreen(
             "volume_mute" -> audio.adjustStreamVolume(android.media.AudioManager.STREAM_MUSIC, android.media.AudioManager.ADJUST_TOGGLE_MUTE, android.media.AudioManager.FLAG_SHOW_UI)
             "play_pause" -> if (stopped) { stopped = false; player.prepare(); player.play() } else player.playWhenReady = !player.playWhenReady
             "stop" -> { player.stop(); stopped = true; error = "Stopped · press Play to resume" }
-            "restart" -> premiumOr("Catch-up") { error = "Restarting programs needs catch-up, coming in the next update." }
+            "restart" -> premiumOr("Catch-up") {
+                val prog = epg.at(channel, System.currentTimeMillis())
+                val url = prog?.let { com.novatv.app.premium.Catchup.url(channel, it.start, it.end) }
+                if (prog != null && url != null) playUrl("${channel.name} · ${prog.title}", url)
+                else error = if (prog == null) "No TV guide info for this program, so it can't be restarted."
+                    else "This channel doesn't offer catch-up."
+            }
             "go_live" -> { player.seekToDefaultPosition(); player.play() }
             "search" -> onNavigate(MenuDest.SEARCH)
             "history" -> onNavigate(MenuDest.HISTORY)
@@ -254,8 +262,22 @@ fun PlayerScreen(
             "shows" -> onNavigate(MenuDest.SHOWS)
             "recordings" -> onNavigate(MenuDest.RECORDINGS)
             "my_list" -> onNavigate(MenuDest.MY_LIST)
-            "record" -> premiumOr("Recording") { error = "Recording is coming in a later update." }
-            "multiview" -> premiumOr("Multiview") { error = "Multiview is coming in a later update." }
+            "record" -> premiumOr("Recording") {
+                val rec = app.recordings
+                val running = rec.items.value.firstOrNull { it.channelId == channel.id && it.state == "recording" }
+                if (running != null) { rec.stop(running.id); error = "Recording stopped" }
+                else {
+                    val now = System.currentTimeMillis()
+                    val prog = epg.at(channel, now)
+                    rec.schedule(channel, prog?.title ?: channel.name, now, prog?.end?.takeIf { it > now + 60_000 } ?: (now + 3_600_000))
+                    error = "● Recording ${prog?.title ?: channel.name} (Recordings in the menu)"
+                }
+                scope.launch { delay(3000); if (error?.startsWith("●") == true || error == "Recording stopped") error = null }
+            }
+            "multiview" -> premiumOr("Multiview") {
+                val others = queue.filter { it.id != channel.id }.take(3)
+                openMultiview(listOf(channel) + others)
+            }
             "pip" -> premiumOr("Picture-in-picture") {
                 (context as? android.app.Activity)?.let { act ->
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O)
@@ -590,7 +612,7 @@ internal fun digitOf(key: Key): Char? = when (key) {
 @Composable
 private fun PlayerMenuBar(settings: AppSettings, onDismiss: () -> Unit, onPick: (String) -> Unit) {
     val app = LocalContext.current.app
-    val saved by app.settings.listFlow(DataKeys.MENU_ORDER).collectAsState(initial = emptyList())
+    val saved by remember(DataKeys.MENU_ORDER) { app.settings.listFlow(DataKeys.MENU_ORDER) }.collectAsState(initial = emptyList())
     val ids = PLAYER_MENU_BUTTONS.map { it.first }
     val order = saved.filter { it in ids } + ids.filter { it !in saved }
     val shown = order.filter { settings.bool("player.btn.$it") }
