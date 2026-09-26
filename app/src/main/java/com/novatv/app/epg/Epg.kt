@@ -31,11 +31,14 @@ class EpgData(
 ) {
     val isEmpty: Boolean get() = byId.isEmpty()
 
-    fun programsFor(c: Channel): List<Program> {
+    /** Channel id -> its programs, filled on first use (the guide asks for the same rows many times per frame). */
+    private val memo = java.util.concurrent.ConcurrentHashMap<String, List<Program>>()
+
+    fun programsFor(c: Channel): List<Program> = memo.getOrPut(c.id) {
         val id = c.epgId?.lowercase()
-        if (id != null) byId[id]?.let { return it }
-        val viaName = nameToId[normalizeName(c.name)] ?: return emptyList()
-        return byId[viaName].orEmpty()
+        if (id != null) byId[id]?.let { return@getOrPut it }
+        val viaName = nameToId[normalizeName(c.name)] ?: return@getOrPut emptyList()
+        byId[viaName].orEmpty()
     }
 
     /** Program airing at [time], or null. */
@@ -87,9 +90,11 @@ class EpgData(
         const val HOUR = 3_600_000L
         val EMPTY = EpgData(emptyMap(), emptyMap(), 0)
 
+        private val QUALITY = Regex("""\b(hd|fhd|uhd|4k|sd|hevc|lhd)\b""")
+
         fun normalizeName(s: String): String =
             s.lowercase()
-                .replace(Regex("""\b(hd|fhd|uhd|4k|sd|hevc)\b"""), "")
+                .replace(QUALITY, "")
                 .filter { it.isLetterOrDigit() }
     }
 }
