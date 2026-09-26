@@ -36,7 +36,10 @@ jobs:
             echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/novatv.jks"
             echo "NOVATV_KEYSTORE_FILE=$RUNNER_TEMP/novatv.jks" >> "$GITHUB_ENV"
           else
-            echo "No KEYSTORE_BASE64 secret: signing with the debug key."
+            echo "No KEYSTORE_BASE64 secret: signing with the public test key (signing/)."
+            base64 -d signing/test-key.p12.b64 > "$RUNNER_TEMP/novatv.jks"
+            echo "NOVATV_KEYSTORE_FILE=$RUNNER_TEMP/novatv.jks" >> "$GITHUB_ENV"
+            echo "NOVATV_TEST_KEY=1" >> "$GITHUB_ENV"
           fi
 
       - name: Build APK
