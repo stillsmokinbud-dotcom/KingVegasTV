@@ -129,6 +129,8 @@ fun GuideScreen(
     onPlay: (queue: List<Channel>, channel: Channel) -> Unit,
     onNavigate: (MenuDest) -> Unit,
     onAddPlaylist: () -> Unit,
+    /** True while the Settings panel is open on top: the guide stays visible but doesn't take the remote. */
+    background: Boolean = false,
 ) {
     val context = LocalContext.current
     val app = context.app
@@ -140,10 +142,10 @@ fun GuideScreen(
     val epg by app.epg.data.collectAsState()
     val playlistStatus by repo.status.collectAsState()
     val epgStatus by app.epg.status.collectAsState()
-    val hidden by app.settings.listFlow(DataKeys.HIDDEN_GROUPS).collectAsState(initial = emptyList())
-    val locked by app.settings.listFlow(DataKeys.LOCKED_GROUPS).collectAsState(initial = emptyList())
-    val favorites by app.settings.listFlow(DataKeys.FAVORITES).collectAsState(initial = emptyList())
-    val recent by app.settings.listFlow(DataKeys.RECENT).collectAsState(initial = emptyList())
+    val hidden by remember(DataKeys.HIDDEN_GROUPS) { app.settings.listFlow(DataKeys.HIDDEN_GROUPS) }.collectAsState(initial = emptyList())
+    val locked by remember(DataKeys.LOCKED_GROUPS) { app.settings.listFlow(DataKeys.LOCKED_GROUPS) }.collectAsState(initial = emptyList())
+    val favorites by remember(DataKeys.FAVORITES) { app.settings.listFlow(DataKeys.FAVORITES) }.collectAsState(initial = emptyList())
+    val recent by remember(DataKeys.RECENT) { app.settings.listFlow(DataKeys.RECENT) }.collectAsState(initial = emptyList())
     val groups by produceState(emptyList<ChannelGroup>(), channels, settings, hidden, locked, favorites, recent) {
         // Off the main thread: sorting and grouping 10,000+ channels would freeze the screen.
         value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
@@ -176,6 +178,18 @@ fun GuideScreen(
     val unlocked = remember { mutableStateOf(setOf<String>()) }
     val rootFocus = remember { FocusRequester() }
 
+    var groupChosen by remember { mutableStateOf(false) }
+    LaunchedEffect(groups) {
+        if (groups.isEmpty()) return@LaunchedEffect
+        val current = groups.getOrNull(groupIndex)
+        if (!groupChosen || current == null || current.channels.isEmpty()) {
+            val last = settings.str(DataKeys.LAST_GROUP)
+            val pick = groups.indexOfFirst { it.name == last && it.channels.isNotEmpty() }.takeIf { it >= 0 }
+                ?: groups.indexOfFirst { it.channels.isNotEmpty() }.takeIf { it >= 0 } ?: 0
+            if (pick != groupIndex) { groupIndex = pick; row = 0; top = 0 }
+            groupChosen = true
+        }
+    }
     val group = groups.getOrNull(groupIndex.coerceIn(0, (groups.size - 1).coerceAtLeast(0)))
     val chs = group?.channels.orEmpty()
     val groupLocked = group != null && group.locked && group.name !in unlocked.value
@@ -313,7 +327,15 @@ fun GuideScreen(
             "shows" -> onNavigate(MenuDest.SHOWS)
             "recordings" -> onNavigate(MenuDest.RECORDINGS)
             "my_list" -> onNavigate(MenuDest.MY_LIST)
-            "record" -> if (!settings.premium) paywall = "Recording" else info = "Recording" to "Recording is coming in a later update."
+            "record" -> if (!settings.premium) paywall = "Recording" else if (c != null) {
+                val now = System.currentTimeMillis()
+                val cell = if (onChannelCol) null else cellAt(c, focusTime)
+                val p = cell?.program ?: epg.at(c, now)
+                val start = maxOf(now, p?.start ?: now)
+                val end = p?.end?.takeIf { it > start + 60_000 } ?: (start + 3_600_000)
+                app.recordings.schedule(c, p?.title ?: c.name, start, end)
+                info = "Recording" to (if (start > now) "Scheduled: " else "Recording now: ") + (p?.title ?: c.name)
+            }
             "settings" -> onNavigate(MenuDest.SETTINGS)
             "return_player" -> scope.launch {
                 repo.lastChannel()?.let { last -> onPlay(repo.channels.value, last) }
@@ -351,7 +373,7 @@ fun GuideScreen(
 
     // Back, like TiviMate: guide scrolled away -> back to "now" (if enabled), otherwise open the menu;
     // Back in the menu twice -> exit the app.
-    BackHandler { guideBack() }
+    BackHandler(enabled = !background) { guideBack() }
 
     val colors = MaterialTheme.colorScheme
     Box(
@@ -393,7 +415,7 @@ fun GuideScreen(
             .focusable()
     ) {
         when {
-            playlists?.isEmpty() == true -> Welcome(onAddPlaylist, onSettings = { onNavigate(MenuDest.SETTINGS) })
+            playlists?.isEmpty() == true -> Welcome(onAddPlaylist, onSettings = { onNavigate(MenuDest.SETTINGS) }, background = background)
             group == null || chs.isEmpty() -> CenterMessage(
                 playlistStatus ?: "No channels here yet",
                 "Press Left for the menu",
@@ -423,7 +445,10 @@ fun GuideScreen(
         if (drawerOpen) {
             SideDrawer(
                 groups = groups, groupIndex = groupIndex,
-                onGroup = { i -> groupIndex = i; row = 0; top = 0; resetToNow(); drawerOpen = false },
+                onGroup = { i ->
+                    groupIndex = i; row = 0; top = 0; resetToNow(); drawerOpen = false
+                    groups.getOrNull(i)?.let { g -> scope.launch { app.settings.set(DataKeys.LAST_GROUP, g.name) } }
+                },
                 onMenu = { d -> drawerOpen = false; if (d != MenuDest.GUIDE) onNavigate(d) },
                 onClose = { drawerOpen = false },
                 focusMenu = drawerOnMenu,
@@ -449,7 +474,7 @@ fun GuideScreen(
     // Give the remote back to the guide whenever nothing else is open
     // (not on the welcome screen: its buttons keep the focus there).
     LaunchedEffect(drawerOpen, menuFor, programFor, pinFor, info, paywall, playlists?.size) {
-        if (playlists?.isEmpty() == true) return@LaunchedEffect
+        if (background || playlists?.isEmpty() == true) return@LaunchedEffect
         if (!drawerOpen && menuFor == null && programFor == null && pinFor == null && info == null && paywall == null) {
             delay(50)
             runCatching { rootFocus.requestFocus() }
@@ -489,11 +514,15 @@ fun GuideScreen(
     }
 
     // OK on a past or future program
+    val playUrl = LocalPlayUrl.current
     programFor?.let { (c, g, cell) ->
         val past = cell.end <= System.currentTimeMillis()
         val options = buildList {
-            if (past) add("cu" to if (c.catchupDays > 0) "Watch from the start (catch-up)" else "Catch-up not available on this channel")
-            else { add("remind" to "Remind me"); add("rec" to "Record") }
+            if (past) add("cu" to if (c.catchupDays > 0) "Watch (catch-up)" else "Catch-up not available on this channel")
+            else {
+                add("remind" to if (app.reminders.has(c.id, cell.start)) "Cancel reminder" else "Remind me")
+                add("rec" to "Record")
+            }
             add("live" to "Watch channel live")
         }
         ChoiceDialog("${cell.title} · ${timeText(cell.start, settings, context)}", options, null, { programFor = null }) { choice ->
@@ -502,9 +531,21 @@ fun GuideScreen(
             if (choice in premiumOnly && !settings.premium) { paywall = premiumOnly[choice]; return@ChoiceDialog }
             when (choice) {
                 "live" -> open(g, c)
-                "cu" -> info = "Catch-up" to "Catch-up playback arrives in the next build."
-                "remind" -> info = "Reminders" to "Program reminders arrive in the next build."
-                "rec" -> info = "Recording" to "Recording arrives in a later build."
+                "cu" -> {
+                    val url = com.novatv.app.premium.Catchup.url(c, cell.start, cell.end)
+                    if (url != null) playUrl("${c.name} · ${cell.title}", url)
+                    else info = "Catch-up" to "This channel doesn't offer catch-up."
+                }
+                "remind" -> {
+                    val r = com.novatv.app.premium.Reminder(c.id, c.name, cell.title, cell.start, cell.end)
+                    if (app.reminders.has(c.id, cell.start)) { app.reminders.remove(r); info = "Reminder removed" to cell.title }
+                    else { app.reminders.add(r); info = "Reminder set" to "You'll get a pop-up when ${cell.title} starts on ${c.name}." }
+                }
+                "rec" -> {
+                    app.recordings.schedule(c, cell.title, cell.start, cell.end)
+                    info = "Recording scheduled" to "${cell.title} on ${c.name} will be recorded while King Vegas TV is running. " +
+                        "Find it under Recordings in the menu."
+                }
                 else -> Unit
             }
         }
@@ -844,7 +885,7 @@ private fun SideDrawer(
 // ------------------------------------------------------------------ other home content
 
 @Composable
-private fun Welcome(onAdd: () -> Unit, onSettings: () -> Unit) {
+private fun Welcome(onAdd: () -> Unit, onSettings: () -> Unit, background: Boolean = false) {
     val addFocus = remember { FocusRequester() }
     val settingsFocus = remember { FocusRequester() }
     Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
@@ -876,7 +917,7 @@ private fun Welcome(onAdd: () -> Unit, onSettings: () -> Unit) {
         Text("Press Back for the menu", fontSize = 13.sp, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.4f),
             modifier = Modifier.padding(top = 14.dp))
     }
-    AutoFocus(addFocus)
+    if (!background) AutoFocus(addFocus)
 }
 
 @Composable
@@ -897,12 +938,18 @@ fun SearchScreen(settings: AppSettings, onPlay: (List<Channel>, Channel) -> Unit
     var query by remember { mutableStateOf("") }
     val fr = remember { FocusRequester() }
     val q = query.trim()
-    val chResults = remember(q, channels) {
-        if (q.length < 2) emptyList() else channels.filter { it.name.contains(q, ignoreCase = true) }.take(100)
+    // Searched off the main thread (17,000+ channels and their programs), shortly after typing stops.
+    val chResults by produceState(emptyList<Channel>(), q, channels) {
+        if (q.length < 2) { value = emptyList(); return@produceState }
+        delay(200)
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            channels.filter { it.name.contains(q, ignoreCase = true) }.take(100)
+        }
     }
-    val progResults = remember(q, channels, epg) {
-        if (q.length < 2 || settings.str("general.search_scope") == "channels") emptyList()
-        else {
+    val progResults by produceState(emptyList<Pair<Channel, Program>>(), q, channels, epg) {
+        if (q.length < 2 || settings.str("general.search_scope") == "channels") { value = emptyList(); return@produceState }
+        delay(300)
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
             val t = System.currentTimeMillis()
             val out = ArrayList<Pair<Channel, Program>>()
             for (c in channels) {
