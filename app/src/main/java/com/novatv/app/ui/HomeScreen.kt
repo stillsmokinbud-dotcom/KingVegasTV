@@ -1,4 +1,5 @@
 package com.novatv.app.ui
+
 import androidx.compose.material.icons.filled.*
 import android.view.ViewGroup
 import androidx.activity.compose.BackHandler
@@ -319,9 +320,23 @@ fun GuideScreen(
     fun mapped(id: String) = if (settings.premium) settings.str(com.novatv.app.settings.RemoteKeys.guideKey(id))
         else com.novatv.app.settings.RemoteKeys.GUIDE_KEYS.first { it.id == id }.default
 
-    BackHandler(enabled = drawerOpen || (settings.bool("guide.back_to_current") &&
-        (!onChannelCol || windowStart != System.currentTimeMillis() / HALF_HOUR * HALF_HOUR))) {
-        if (drawerOpen) drawerOpen = false else resetToNow()
+    // Back, like TiviMate: guide scrolled away -> back to "now" (if enabled), otherwise open the menu;
+    // Back in the menu twice -> exit the app.
+    var lastBackInMenu by remember { mutableStateOf(0L) }
+    BackHandler {
+        val scrolled = !onChannelCol || windowStart != System.currentTimeMillis() / HALF_HOUR * HALF_HOUR
+        when {
+            drawerOpen -> {
+                val now = System.currentTimeMillis()
+                if (now - lastBackInMenu < 2500) (context as? android.app.Activity)?.finish()
+                else {
+                    lastBackInMenu = now
+                    android.widget.Toast.makeText(context, "Press Back again to exit", android.widget.Toast.LENGTH_SHORT).show()
+                }
+            }
+            settings.bool("guide.back_to_current") && scrolled -> resetToNow()
+            else -> drawerOpen = true
+        }
     }
 
     val colors = MaterialTheme.colorScheme
