@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -154,6 +155,8 @@ fun GuideScreen(
     var focusTime by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var windowStart by remember { mutableLongStateOf(System.currentTimeMillis() / HALF_HOUR * HALF_HOUR) }
     var drawerOpen by remember { mutableStateOf(app.openGuideGroups.also { app.openGuideGroups = false }) }
+    var drawerOnMenu by remember { mutableStateOf(false) } // Back opens the drawer on the main menu, Left on the groups
+    var numberBuffer by remember { mutableStateOf("") }
     var keyLongFired by remember { mutableStateOf(false) }
     var okLongFired by remember { mutableStateOf(false) }
 
@@ -255,6 +258,23 @@ fun GuideScreen(
         }
     }
 
+    var lastBackInMenu by remember { mutableStateOf(0L) }
+    fun guideBack() {
+        val scrolled = !onChannelCol || windowStart != System.currentTimeMillis() / HALF_HOUR * HALF_HOUR
+        when {
+            drawerOpen -> {
+                val now = System.currentTimeMillis()
+                if (now - lastBackInMenu < 2500) (context as? android.app.Activity)?.finish()
+                else {
+                    lastBackInMenu = now
+                    android.widget.Toast.makeText(context, "Press Back again to exit", android.widget.Toast.LENGTH_SHORT).show()
+                }
+            }
+            settings.bool("guide.back_to_current") && scrolled -> resetToNow()
+            else -> { drawerOnMenu = true; drawerOpen = true }
+        }
+    }
+
     fun guideAction(action: String) {
         val g = group
         val c = channel
@@ -265,7 +285,7 @@ fun GuideScreen(
                 val go = { menuFor = c to g }
                 if (settings.premium && settings.bool("parental.enabled") && settings.bool(lock)) pinFor = go else go()
             }
-            "groups" -> drawerOpen = true
+            "groups" -> { drawerOnMenu = false; drawerOpen = true }
             "next_programs" -> handleKey(Key.DirectionRight)
             "page_up" -> handleKey(Key.PageUp)
             "page_down" -> handleKey(Key.PageDown)
@@ -292,6 +312,7 @@ fun GuideScreen(
                 repo.lastChannel()?.let { last -> onPlay(repo.channels.value, last) }
             }
             "exit" -> (context as? android.app.Activity)?.finish()
+            "go_back" -> guideBack()
             else -> Unit
         }
     }
@@ -299,6 +320,7 @@ fun GuideScreen(
     /** Remote control › TV guide: which key id this key is (null = normal navigation). */
     fun guideKeyId(k: Key): String? = when (k) {
         Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> "ok"
+        Key.Back -> "back"
         Key.ChannelUp, Key.PageUp -> "ch_up"
         Key.ChannelDown, Key.PageDown -> "ch_down"
         Key.Menu -> "menu"
@@ -316,28 +338,13 @@ fun GuideScreen(
         Key.ProgramBlue -> "blue"
         else -> null
     }
-    val guideLongKeys = setOf("ok", "menu", "play_pause")
+    val guideLongKeys = setOf("ok", "back", "menu", "play_pause")
     fun mapped(id: String) = if (settings.premium) settings.str(com.novatv.app.settings.RemoteKeys.guideKey(id))
         else com.novatv.app.settings.RemoteKeys.GUIDE_KEYS.first { it.id == id }.default
 
     // Back, like TiviMate: guide scrolled away -> back to "now" (if enabled), otherwise open the menu;
     // Back in the menu twice -> exit the app.
-    var lastBackInMenu by remember { mutableStateOf(0L) }
-    BackHandler {
-        val scrolled = !onChannelCol || windowStart != System.currentTimeMillis() / HALF_HOUR * HALF_HOUR
-        when {
-            drawerOpen -> {
-                val now = System.currentTimeMillis()
-                if (now - lastBackInMenu < 2500) (context as? android.app.Activity)?.finish()
-                else {
-                    lastBackInMenu = now
-                    android.widget.Toast.makeText(context, "Press Back again to exit", android.widget.Toast.LENGTH_SHORT).show()
-                }
-            }
-            settings.bool("guide.back_to_current") && scrolled -> resetToNow()
-            else -> drawerOpen = true
-        }
-    }
+    BackHandler { guideBack() }
 
     val colors = MaterialTheme.colorScheme
     Box(
@@ -364,6 +371,11 @@ fun GuideScreen(
                     return@onKeyEvent e.type == KeyEventType.KeyDown || e.type == KeyEventType.KeyUp
                 }
                 if (e.type != KeyEventType.KeyDown) return@onKeyEvent false
+                // Number keys jump to a channel, like TiviMate.
+                val digit = digitOf(e.key)
+                if (digit != null && chs.isNotEmpty() && settings.bool("remote.number_keys")) {
+                    numberBuffer = (numberBuffer + digit).takeLast(5); return@onKeyEvent true
+                }
                 // Left / Right on the channel column follow Remote control › TV guide.
                 if (onChannelCol && channel != null && e.key == Key.DirectionLeft) { guideAction(mapped("left")); return@onKeyEvent true }
                 if (onChannelCol && channel != null && e.key == Key.DirectionRight && mapped("right") != "next_programs") {
@@ -374,7 +386,7 @@ fun GuideScreen(
             .focusable()
     ) {
         when {
-            playlists?.isEmpty() == true -> Welcome(onAddPlaylist)
+            playlists?.isEmpty() == true -> Welcome(onAddPlaylist, onSettings = { onNavigate(MenuDest.SETTINGS) })
             group == null || chs.isEmpty() -> CenterMessage(
                 playlistStatus ?: "No channels here yet",
                 "Press Left for the menu",
@@ -407,12 +419,30 @@ fun GuideScreen(
                 onGroup = { i -> groupIndex = i; row = 0; top = 0; resetToNow(); drawerOpen = false },
                 onMenu = { d -> drawerOpen = false; if (d != MenuDest.GUIDE) onNavigate(d) },
                 onClose = { drawerOpen = false },
+                focusMenu = drawerOnMenu,
             )
+        }
+
+        if (numberBuffer.isNotEmpty()) {
+            Text(numberBuffer, fontSize = 48.sp, fontWeight = FontWeight.Bold, color = Color.White,
+                modifier = Modifier.align(Alignment.TopEnd).padding(32.dp)
+                    .background(Color.Black.copy(alpha = 0.7f)).padding(horizontal = 20.dp, vertical = 8.dp))
         }
     }
 
-    // Give the remote back to the guide whenever nothing else is open.
+    LaunchedEffect(numberBuffer) {
+        if (numberBuffer.isEmpty()) return@LaunchedEffect
+        delay(settings.int("remote.number_delay").coerceAtLeast(1) * 1000L)
+        val n = numberBuffer.toIntOrNull()
+        val target = chs.indexOfFirst { it.number == n }.takeIf { it >= 0 } ?: n?.minus(1)?.takeIf { it in chs.indices }
+        if (target != null) { row = target; resetToNow() }
+        numberBuffer = ""
+    }
+
+    // Give the remote back to the guide whenever nothing else is open
+    // (not on the welcome screen: its buttons keep the focus there).
     LaunchedEffect(drawerOpen, menuFor, programFor, pinFor, info, paywall, playlists?.size) {
+        if (playlists?.isEmpty() == true) return@LaunchedEffect
         if (!drawerOpen && menuFor == null && programFor == null && pinFor == null && info == null && paywall == null) {
             delay(50)
             runCatching { rootFocus.requestFocus() }
@@ -718,6 +748,7 @@ private fun SideDrawer(
     onGroup: (Int) -> Unit,
     onMenu: (MenuDest) -> Unit,
     onClose: () -> Unit,
+    focusMenu: Boolean = false,
 ) {
     val context = LocalContext.current
     val groupFocus = remember { FocusRequester() }
@@ -790,25 +821,46 @@ private fun SideDrawer(
     }
     LaunchedEffect(Unit) {
         delay(30)
-        if (groups.isNotEmpty()) runCatching { groupFocus.requestFocus() } else runCatching { menuFocus.requestFocus() }
+        if (groups.isNotEmpty() && !focusMenu) runCatching { groupFocus.requestFocus() } else runCatching { menuFocus.requestFocus() }
     }
 }
 
 // ------------------------------------------------------------------ other home content
 
 @Composable
-private fun Welcome(onAdd: () -> Unit) {
-    val fr = remember { FocusRequester() }
+private fun Welcome(onAdd: () -> Unit, onSettings: () -> Unit) {
+    val addFocus = remember { FocusRequester() }
+    val settingsFocus = remember { FocusRequester() }
     Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-        Text("Welcome", fontSize = 32.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onBackground)
-        Text("Add a playlist to start watching: an M3U link, an M3U file, or an Xtream Codes login.", fontSize = 16.sp,
-            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f))
+        Text(
+            "King Vegas TV doesn't provide any sources of TV channels. " +
+                "Add the playlist from your IPTV provider to be able to watch TV channels.",
+            fontSize = 16.sp, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.8f),
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            modifier = Modifier.width(620.dp)
+                .border(1.dp, MaterialTheme.colorScheme.onBackground.copy(alpha = 0.3f))
+                .padding(horizontal = 18.dp, vertical = 12.dp),
+        )
         Spacer(Modifier.height(24.dp))
-        TvRow(modifier = Modifier.width(340.dp).focusRequester(fr), onClick = onAdd) { RowTitle("+  Add playlist") }
-        Text("Press Left for the menu", fontSize = 13.sp, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.4f),
-            modifier = Modifier.padding(top = 10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            // Left / Right move between the two buttons here (instead of opening the side menu).
+            TvRow(modifier = Modifier.width(170.dp).focusRequester(addFocus)
+                .onPreviewKeyEvent { e -> if (e.type == KeyEventType.KeyDown && e.key == Key.DirectionRight) { settingsFocus.requestFocus(); true } else false },
+                selected = true, onClick = onAdd) {
+                Text("Add playlist", fontSize = 16.sp, color = rowContentColor(), modifier = Modifier.fillMaxWidth(),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+            }
+            TvRow(modifier = Modifier.width(170.dp).focusRequester(settingsFocus)
+                .onPreviewKeyEvent { e -> if (e.type == KeyEventType.KeyDown && e.key == Key.DirectionLeft) { addFocus.requestFocus(); true } else false },
+                selected = true, onClick = onSettings) {
+                Text("Settings", fontSize = 16.sp, color = rowContentColor(), modifier = Modifier.fillMaxWidth(),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+            }
+        }
+        Text("Press Back for the menu", fontSize = 13.sp, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.4f),
+            modifier = Modifier.padding(top = 14.dp))
     }
-    AutoFocus(fr)
+    AutoFocus(addFocus)
 }
 
 @Composable
