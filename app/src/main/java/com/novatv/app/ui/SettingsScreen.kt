@@ -389,7 +389,7 @@ private fun summaryFor(item: SettingItem, s: AppSettings): String? {
         } ?: item.summary
         is ActionItem -> when (item.key) {
             "epg.sources" -> {
-                val n by context.app.settings.listFlow(DataKeys.EPG_SOURCES).collectAsState(initial = emptyList())
+                val n by remember(DataKeys.EPG_SOURCES) { context.app.settings.listFlow(DataKeys.EPG_SOURCES) }.collectAsState(initial = emptyList())
                 "${n.size} source" + if (n.size == 1) "" else "s"
             }
             "epg.status" -> s.raw[EpgRepository.KEY_LAST_STATUS] ?: "Not updated yet"
@@ -460,7 +460,7 @@ private fun LazyListScope.customPage(
             item(key = "list") {
                 val app = LocalContext.current.app
                 val scope = rememberCoroutineScope()
-                val list by app.settings.listFlow(DataKeys.EPG_SOURCES).collectAsState(initial = emptyList())
+                val list by remember(DataKeys.EPG_SOURCES) { app.settings.listFlow(DataKeys.EPG_SOURCES) }.collectAsState(initial = emptyList())
                 androidx.compose.foundation.layout.Column {
                     list.forEach { url ->
                         PanelRow(url.substringAfter("://").substringBefore('/'), url,
@@ -547,7 +547,7 @@ private fun LazyListScope.customPage(
                             }
                         }
                         "playlist_epg" -> {
-                            val globals by app.settings.listFlow(DataKeys.EPG_SOURCES).collectAsState(initial = emptyList())
+                            val globals by remember(DataKeys.EPG_SOURCES) { app.settings.listFlow(DataKeys.EPG_SOURCES) }.collectAsState(initial = emptyList())
                             PanelRow("Manage sources", modifier = m()) { push(Page.Custom("epg_sources", "EPG sources")) }
                             PanelHeader("Assigned sources")
                             PanelRow("Playlist's own EPG", if (p.type == PlaylistType.XTREAM) "xmltv.php from the server" else "url-tvg from the playlist",
@@ -620,7 +620,7 @@ private fun LazyListScope.customPage(
                             if (kind != "tv") {
                                 PanelNote("Movie and show groups appear here once this playlist's VOD has been loaded.")
                             } else {
-                                val hidden by app.settings.listFlow(DataKeys.HIDDEN_GROUPS).collectAsState(initial = emptyList())
+                                val hidden by remember(DataKeys.HIDDEN_GROUPS) { app.settings.listFlow(DataKeys.HIDDEN_GROUPS) }.collectAsState(initial = emptyList())
                                 val groups = remember(p.id, p.lastUpdated) { app.playlists.groupsOf(p.id) }
                                 PanelRow("Groups sorting", when (p.groupsSort) { "playlist" -> "By order in playlist"; "name" -> "By name"; else -> "Default" },
                                     modifier = m()) { push(Page.Custom("playlist_groups_sort", "Groups sorting", p.id)) }
@@ -655,7 +655,7 @@ private fun LazyListScope.customPage(
 private fun ReorderButtons() {
     val app = LocalContext.current.app
     val scope = rememberCoroutineScope()
-    val saved by app.settings.listFlow(DataKeys.MENU_ORDER).collectAsState(initial = emptyList())
+    val saved by remember(DataKeys.MENU_ORDER) { app.settings.listFlow(DataKeys.MENU_ORDER) }.collectAsState(initial = emptyList())
     val ids = PLAYER_MENU_BUTTONS.map { it.first }
     val order = (saved.filter { it in ids } + ids.filter { it !in saved })
     var moving by remember { mutableStateOf<String?>(null) }
