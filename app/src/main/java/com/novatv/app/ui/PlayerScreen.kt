@@ -141,6 +141,31 @@ fun PlayerScreen(
         repo.markWatched(channel)
     }
 
+    // Freeze watchdog: if the picture (or the whole stream) stops moving while the player says it is
+    // playing, reconnect to the channel. Catches the "picture frozen, sound still playing" case.
+    LaunchedEffect(index) {
+        var lastFrames = -1
+        var lastPos = -1L
+        var stuck = 0
+        while (true) {
+            delay(2000)
+            if (stopped || !player.playWhenReady || player.playbackState != Player.STATE_READY) { stuck = 0; lastFrames = -1; continue }
+            val counters = player.videoDecoderCounters?.also { it.ensureUpdated() }
+            val frames = counters?.renderedOutputBufferCount ?: -1
+            val pos = player.currentPosition
+            val videoStuck = player.videoFormat != null && frames >= 0 && frames == lastFrames
+            val allStuck = pos == lastPos
+            stuck = if (videoStuck || allStuck) stuck + 1 else 0
+            lastFrames = frames; lastPos = pos
+            if (stuck >= 3) { // ~6 seconds without new frames
+                stuck = 0; lastFrames = -1; lastPos = -1
+                player.seekToDefaultPosition()
+                player.prepare()
+                player.playWhenReady = true
+            }
+        }
+    }
+
     // Channel info banner
     LaunchedEffect(bannerTick) {
         bannerVisible = true
