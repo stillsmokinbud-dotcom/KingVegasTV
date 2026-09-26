@@ -50,6 +50,9 @@ sealed interface Screen {
     data object GetPremium : Screen
     data class Info(val title: String, val text: String) : Screen
     data class Player(val channelId: String) : Screen
+    data object Recordings : Screen
+    data object Reminders : Screen
+    data class Multiview(val channelIds: List<String>) : Screen
     data class Vod(val kind: com.novatv.app.playlist.VodKind) : Screen
     data class MovieDetails(val item: com.novatv.app.playlist.VodItem) : Screen
     data class Series(val item: com.novatv.app.playlist.VodItem) : Screen
@@ -149,9 +152,9 @@ private fun AppRoot(settings: AppSettings, onFinish: () -> Unit) {
             MenuDest.SEARCH -> push(Screen.Search)
             MenuDest.MOVIES -> push(Screen.Vod(com.novatv.app.playlist.VodKind.MOVIES))
             MenuDest.SHOWS -> push(Screen.Vod(com.novatv.app.playlist.VodKind.SHOWS))
-            MenuDest.RECORDINGS -> push(Screen.Info("Recordings", "No recordings"))
+            MenuDest.RECORDINGS -> push(Screen.Recordings)
             MenuDest.MY_TV_PROGRAMS -> push(Screen.Info("My TV programs", "No programs"))
-            MenuDest.MY_REMINDERS -> push(Screen.Info("My reminders", "No reminders"))
+            MenuDest.MY_REMINDERS -> push(Screen.Reminders)
             MenuDest.MY_MOVIES -> push(Screen.Info("My movies", "No movies"))
             MenuDest.MY_SHOWS -> push(Screen.Info("My shows", "No shows"))
             MenuDest.HISTORY -> push(Screen.Info("History", "Recently watched channels appear in the TV guide under \"Recently watched\"."))
@@ -160,7 +163,21 @@ private fun AppRoot(settings: AppSettings, onFinish: () -> Unit) {
         }
     }
 
-    CompositionLocalProvider(LocalOpenPremium provides { if (stack.lastOrNull() != Screen.Premium) push(Screen.Premium) }) {
+    // Recordings start on time and reminders pop up while the app is open.
+    var dueReminder by remember { mutableStateOf<com.novatv.app.premium.Reminder?>(null) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(15_000)
+            app.recordings.tick()
+            if (dueReminder == null) app.reminders.takeDue().firstOrNull()?.let { dueReminder = it }
+        }
+    }
+
+    CompositionLocalProvider(
+        LocalOpenPremium provides { if (stack.lastOrNull() != Screen.Premium) push(Screen.Premium) },
+        com.novatv.app.ui.LocalPlayUrl provides { title, url -> push(Screen.VodPlayer(listOf("url:$url" to url), listOf(title), 0, true)) },
+        com.novatv.app.ui.LocalOpenMultiview provides { chs -> push(Screen.Multiview(chs.map { it.id })) },
+    ) {
         when (val screen = stack.last()) {
             Screen.Home -> GuideScreen(
                 settings = settings,
@@ -183,13 +200,26 @@ private fun AppRoot(settings: AppSettings, onFinish: () -> Unit) {
                 onPickType = { t -> push(Screen.AddPlaylist(t)) },
                 onFinished = { stack.clear(); stack.add(Screen.Home) },
             )
-            is Screen.Settings -> SettingsScreen(settings, screen.page, onClose = ::pop) { action ->
+            is Screen.Settings -> {
+                // TiviMate: Settings slides in from the right over the screen you came from.
+                if (stack.getOrNull(stack.lastIndex - 1) == Screen.Home) GuideScreen(
+                    settings = settings, onPlay = { _, _ -> }, onNavigate = {}, onAddPlaylist = {}, background = true,
+                )
+                SettingsScreen(settings, screen.page, onClose = ::pop) { action ->
                 when (action) {
                     SettingAction.ADD_PLAYLIST -> push(Screen.AddPlaylist(null))
                     SettingAction.PREMIUM_ACCOUNT -> push(Screen.Premium)
                     SettingAction.GET_PREMIUM -> push(Screen.GetPremium)
                     else -> Unit
                 }
+                }
+            }
+            Screen.Recordings -> com.novatv.app.ui.RecordingsScreen()
+            Screen.Reminders -> com.novatv.app.ui.RemindersScreen()
+            is Screen.Multiview -> {
+                val all = app.playQueue.ifEmpty { app.playlists.channels.value }
+                val start = screen.channelIds.mapNotNull { id -> all.firstOrNull { it.id == id } }
+                com.novatv.app.ui.MultiviewScreen(settings, start, all, onExit = ::pop)
             }
             is Screen.Vod -> com.novatv.app.ui.VodBrowseScreen(screen.kind) { item ->
                 push(if (screen.kind == com.novatv.app.playlist.VodKind.MOVIES) Screen.MovieDetails(item) else Screen.Series(item))
@@ -207,6 +237,16 @@ private fun AppRoot(settings: AppSettings, onFinish: () -> Unit) {
                 onNavigate = { d -> pop(); navigate(d) },
                 onFinishApp = onFinish)
         }
+    }
+
+    dueReminder?.let { r ->
+        com.novatv.app.ui.ReminderPopup(r, onWatch = {
+            dueReminder = null
+            app.playlists.channels.value.firstOrNull { it.id == r.channelId }?.let { ch ->
+                app.playQueue = app.playlists.channels.value
+                push(Screen.Player(ch.id))
+            }
+        }, onDismiss = { dueReminder = null })
     }
 
     toast?.let { t ->
