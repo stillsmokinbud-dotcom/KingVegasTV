@@ -85,12 +85,12 @@ class PlaylistRepository(
         loadStats()
     }
 
-    /** Channels per playlist (for Settings › Playlists). */
-    fun channelCount(playlistId: String): Int = readCache(playlistId)?.channels?.size ?: 0
+    /** Channels per playlist (for Settings › Playlists); counted from memory, no file reads. */
+    fun channelCount(playlistId: String): Int = _channels.value.count { it.playlistId == playlistId }
 
     /** Group names of one playlist (for Manage groups). */
     fun groupsOf(playlistId: String): List<String> =
-        readCache(playlistId)?.channels?.map { it.group }?.distinct().orEmpty()
+        _channels.value.asSequence().filter { it.playlistId == playlistId }.map { it.group }.distinct().toList()
 
     /** Download and parse playlists. Pass null to refresh all enabled playlists. */
     suspend fun refresh(onlyId: String? = null): Result<Int> = withContext(Dispatchers.IO) {
