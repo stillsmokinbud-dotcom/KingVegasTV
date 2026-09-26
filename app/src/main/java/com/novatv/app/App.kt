@@ -22,6 +22,8 @@ class App : Application() {
         private set
     lateinit var license: LicenseManager
         private set
+    lateinit var vod: com.novatv.app.playlist.VodRepository
+        private set
 
     /** Background work that should outlive a single screen (e.g. guide downloads). */
     val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -41,9 +43,11 @@ class App : Application() {
         playlists = PlaylistRepository(this, settings)
         epg = EpgRepository(this, settings, playlists)
         license = LicenseManager(settings, playlists.http)
+        vod = com.novatv.app.playlist.VodRepository(this, playlists.http, playlists)
         // Settings → TV guide → "Update when a playlist is updated"
         playlists.onChannelsUpdated = {
             if (settings.current().bool("epg.update_on_playlist_change")) appScope.launch { epg.update() }
+            appScope.launch { vod.refresh() }
         }
     }
 }
