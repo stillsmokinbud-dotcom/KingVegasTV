@@ -420,7 +420,7 @@ private fun LazyListScope.dynamicRows(key: String, s: AppSettings, push: (Page) 
                     ofType.forEach { p ->
                         PanelRow(
                             p.name,
-                            "Channels: ${app.playlists.channelCount(p.id)}, movies: 0, shows: 0",
+                            "Channels: ${app.playlists.channelCount(p.id)}, movies: ${app.vod.countFor(p.id, com.novatv.app.playlist.VodKind.MOVIES)}, shows: ${app.vod.countFor(p.id, com.novatv.app.playlist.VodKind.SHOWS)}",
                             leading = {
                                 Icon(if (p.enabled) Icons.Filled.CheckCircle else Icons.Outlined.Circle, null,
                                     tint = if (p.enabled) androidx.compose.material3.MaterialTheme.colorScheme.primary else rowContentColor(true))
