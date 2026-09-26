@@ -59,7 +59,8 @@ class PlayerFactory(private val context: Context, private val baseHttp: OkHttpCl
         val player = ExoPlayer.Builder(context, renderers)
             .setTrackSelector(trackSelector)
             .setLoadControl(loadControl(s.str("playback.buffer")))
-            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSource, extractors()))
+            // DefaultDataSource: network streams through OkHttp, plus local files (recordings) and content:// links.
+            .setMediaSourceFactory(DefaultMediaSourceFactory(androidx.media3.datasource.DefaultDataSource.Factory(context, dataSource), extractors()))
             .build()
 
         // Auto frame rate: ask the display to match the video's frame rate when it can do so seamlessly.
