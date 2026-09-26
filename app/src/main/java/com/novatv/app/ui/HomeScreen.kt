@@ -281,6 +281,16 @@ fun GuideScreen(
 
     var lastBackInMenu by remember { mutableStateOf(0L) }
     fun guideBack() {
+        // Empty start screen (no playlist yet): like TiviMate there is no side menu; Back twice exits.
+        if (playlists?.isEmpty() == true) {
+            val now = System.currentTimeMillis()
+            if (now - lastBackInMenu < 2500) (context as? android.app.Activity)?.finish()
+            else {
+                lastBackInMenu = now
+                android.widget.Toast.makeText(context, "Press Back again to exit", android.widget.Toast.LENGTH_SHORT).show()
+            }
+            return
+        }
         val scrolled = !onChannelCol || windowStart != System.currentTimeMillis() / HALF_HOUR * HALF_HOUR
         when {
             drawerOpen -> {
@@ -383,6 +393,8 @@ fun GuideScreen(
             .focusRequester(rootFocus)
             .onKeyEvent { e ->
                 if (drawerOpen) return@onKeyEvent false
+                // Welcome screen: only the two buttons; no side menu (Left/Menu/arrows do nothing here).
+                if (playlists?.isEmpty() == true) return@onKeyEvent e.key != Key.Back
                 val id = guideKeyId(e.key)
                 if (id != null && (channel != null || groupLocked)) {
                     if (groupLocked && id == "ok") { if (e.type == KeyEventType.KeyUp) onOk(false); return@onKeyEvent true }
@@ -412,7 +424,8 @@ fun GuideScreen(
                 }
                 handleKey(e.key)
             }
-            .focusable()
+            // Only the live guide takes the remote itself; behind Settings or on the welcome screen it must not.
+            .focusable(enabled = !background && playlists?.isEmpty() != true)
     ) {
         when {
             playlists?.isEmpty() == true -> Welcome(onAddPlaylist, onSettings = { onNavigate(MenuDest.SETTINGS) }, background = background)
@@ -442,7 +455,7 @@ fun GuideScreen(
             }
         }
 
-        if (drawerOpen) {
+        if (drawerOpen && playlists?.isEmpty() != true && !background) {
             SideDrawer(
                 groups = groups, groupIndex = groupIndex,
                 onGroup = { i ->
@@ -914,10 +927,14 @@ private fun Welcome(onAdd: () -> Unit, onSettings: () -> Unit, background: Boole
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center)
             }
         }
-        Text("Press Back for the menu", fontSize = 13.sp, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.4f),
-            modifier = Modifier.padding(top = 14.dp))
     }
-    if (!background) AutoFocus(addFocus)
+    // Put the highlight on "Add playlist" (retry: on first start the screen may still be settling).
+    if (!background) LaunchedEffect(Unit) {
+        repeat(20) {
+            if (runCatching { addFocus.requestFocus() }.isSuccess) return@LaunchedEffect
+            delay(50)
+        }
+    }
 }
 
 @Composable
