@@ -288,7 +288,7 @@ fun ScreenHeader(title: String, subtitle: String? = null) {
 @Composable
 fun AutoFocus(requester: FocusRequester, key: Any? = Unit) {
     LaunchedEffect(key) {
-        repeat(5) {
+        repeat(20) {
             if (runCatching { requester.requestFocus() }.isSuccess) return@LaunchedEffect
             kotlinx.coroutines.delay(50)
         }
@@ -428,4 +428,12 @@ fun MessageDialog(title: String, message: String, onDismiss: () -> Unit) {
         }
     }
     AutoFocus(fr)
+}
+
+/** Shows [content] but never lets the remote's focus go into it (e.g. the guide behind the Settings panel). */
+@Composable
+fun NoFocus(content: @Composable () -> Unit) {
+    androidx.compose.foundation.layout.Box(
+        Modifier.focusProperties { enter = { FocusRequester.Cancel } }.focusGroup()
+    ) { content() }
 }
