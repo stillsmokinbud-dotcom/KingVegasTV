@@ -9,6 +9,7 @@ import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material.icons.outlined.Circle
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
@@ -30,6 +31,11 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import coil.imageLoader
 import com.novatv.app.BuildConfig
 import com.novatv.app.app
@@ -219,9 +225,28 @@ fun SettingsScreen(
         val fr = remember(depth, page) { FocusRequester() }
         LazyColumn(state = listState) {
             when (page) {
-                is Page.Menu -> renderItems(page.item.items, settings, ::openItem, { key -> dynamicRows(key, settings, push = ::push) },
-                    rowModifier = { i -> if (i == startIndex) Modifier.focusRequester(fr) else Modifier },
-                    onFocus = { i -> focusMemory[depth] = i })
+                is Page.Menu -> {
+                    // TiviMate: free version shows "Unlock Premium" on top of the settings root, focused first.
+                    val unlock = depth == 1 && !settings.premium
+                    val unlockFocus = unlock && focusMemory[depth] == null
+                    if (unlock) {
+                        item(key = "unlock_note") {
+                            Text("All features are available in Premium version", fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.padding(start = 16.dp, top = 4.dp, bottom = 4.dp))
+                        }
+                        item(key = "unlock") {
+                            PanelRow("Unlock Premium",
+                                modifier = if (unlockFocus) Modifier.focusRequester(fr) else Modifier,
+                                leading = { androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Filled.VpnKey,
+                                    contentDescription = null, tint = rowContentColor(), modifier = Modifier.size(22.dp)) },
+                            ) { onOpen(SettingAction.GET_PREMIUM) }
+                        }
+                    }
+                    renderItems(page.item.items, settings, ::openItem, { key -> dynamicRows(key, settings, push = ::push) },
+                        rowModifier = { i -> if (i == startIndex && !unlockFocus) Modifier.focusRequester(fr) else Modifier },
+                        onFocus = { i -> focusMemory[depth] = i })
+                }
                 is Page.Choice -> {
                     val current = settings.str(page.key)
                     page.options.forEachIndexed { i, (value, label) ->
