@@ -160,6 +160,8 @@ fun SettingsScreen(
             SettingAction.REFRESH_ALL_PLAYLISTS -> scope.launch {
                 message = "Update all playlists" to "Updating…"
                 message = updateResultMessage(playlists.refresh())
+                // Movies and shows too (runs in the background; the counts update when done).
+                app.appScope.launch { runCatching { app.vod.refresh() } }
             }
             SettingAction.MANAGE_EPG_SOURCES -> push(Page.Custom("epg_sources", "EPG sources"))
             SettingAction.CLEAR_EPG_CACHE -> { app.epg.clear(); message = "Clear EPG" to "EPG cleared." }
