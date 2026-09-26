@@ -115,6 +115,10 @@ fun timeText(ts: Long, s: AppSettings, context: android.content.Context): String
     return SimpleDateFormat(pattern, Locale.getDefault()).format(Date(ts))
 }
 
+/** "Sat, Sep 26, 9:49 AM" for the guide header. */
+fun dateTimeText(ts: Long, s: AppSettings, context: android.content.Context): String =
+    SimpleDateFormat("EEE, MMM d, ", Locale.getDefault()).format(Date(ts)) + timeText(ts, s, context)
+
 /**
  * Home screen, TiviMate style: program details and a live preview on top,
  * the TV guide grid below, and a side menu (Left from the channel column).
@@ -141,7 +145,10 @@ fun GuideScreen(
     val favorites by app.settings.listFlow(DataKeys.FAVORITES).collectAsState(initial = emptyList())
     val recent by app.settings.listFlow(DataKeys.RECENT).collectAsState(initial = emptyList())
     val groups by produceState(emptyList<ChannelGroup>(), channels, settings, hidden, locked, favorites, recent) {
-        value = repo.organize(channels, settings, hidden.toSet(), locked.toSet(), favorites, recent)
+        // Off the main thread: sorting and grouping 10,000+ channels would freeze the screen.
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            repo.organize(channels, settings, hidden.toSet(), locked.toSet(), favorites, recent)
+        }
     }
     val now by produceState(System.currentTimeMillis()) {
         while (true) { delay(30_000); value = System.currentTimeMillis() }
@@ -514,59 +521,64 @@ private fun TopInfo(
     settings: AppSettings, c: Channel, program: Program?, favorites: List<String>,
     epg: EpgData, now: Long, status: String?,
 ) {
+    // TiviMate layout: live preview top-left, program info to its right, channel name top-right.
     val context = LocalContext.current
     val colors = MaterialTheme.colorScheme
-    val muted = colors.onBackground.copy(alpha = 0.6f)
+    val muted = colors.onBackground.copy(alpha = 0.65f)
     val showPreview = settings.bool("epg.show_preview")
-    Row(Modifier.fillMaxWidth().height(250.dp).padding(start = 34.dp, end = 30.dp, top = 20.dp, bottom = 10.dp)) {
+    Row(Modifier.fillMaxWidth().height(230.dp).padding(start = 24.dp, end = 30.dp, top = 18.dp, bottom = 8.dp)) {
+        if (showPreview) {
+            PreviewVideo(settings, c, Modifier.size(356.dp, 200.dp).clip(RoundedCornerShape(6.dp)).background(Color.Black))
+            Spacer(Modifier.width(24.dp))
+        }
         Column(Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                ChannelLogo(settings, c, 44.dp)
-                val num = if (settings.bool("channels.show_numbers")) c.number?.let { "$it  " } ?: "" else ""
-                Text("$num${c.name}", fontSize = 15.sp, color = muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                if (c.catchupDays > 0 && settings.bool("channels.catchup_icon")) Badge("CATCH-UP", Color(0xFF80CBC4))
-                if (c.id in favorites) Text("★", color = Color(0xFFFFC107))
-                Spacer(Modifier.weight(1f))
-                if (settings.bool("appearance.show_clock")) Text(timeText(now, settings, context), fontSize = 15.sp, color = muted)
+            Row(verticalAlignment = Alignment.Top) {
+                Text(program?.title ?: "No information", fontSize = 26.sp, fontWeight = FontWeight.Bold,
+                    color = if (program != null) colors.onBackground else muted,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                Spacer(Modifier.width(16.dp))
+                Column(horizontalAlignment = Alignment.End) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        if (c.id in favorites) Text("★", color = Color(0xFFFFC107), fontSize = 14.sp)
+                        if (c.catchupDays > 0 && settings.bool("channels.catchup_icon")) Badge("CATCH-UP", Color(0xFF80CBC4))
+                        Text(c.name, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = colors.onBackground, maxLines = 1,
+                            overflow = TextOverflow.Ellipsis, modifier = Modifier.width(260.dp),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.End)
+                    }
+                }
             }
             if (program != null) {
-                Text(program.title, fontSize = 26.sp, fontWeight = FontWeight.Medium, color = colors.onBackground,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 10.dp, bottom = 4.dp))
-                val left = when {
-                    now >= program.end -> "Ended"
-                    now >= program.start -> "${(program.end - now) / 60_000} min left"
-                    else -> "Starts ${timeText(program.start, settings, context)}"
-                }
-                Text("${timeText(program.start, settings, context)} – ${timeText(program.end, settings, context)}  ·  $left",
-                    fontSize = 15.sp, color = muted)
-                if (now >= program.start && now < program.end && settings.bool("guide.highlight_current_programs")) {
-                    ProgressBar((now - program.start).toFloat() / (program.end - program.start), Modifier.width(320.dp).padding(top = 8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 6.dp)) {
+                    Text("${timeText(program.start, settings, context)} — ${timeText(program.end, settings, context)}",
+                        fontSize = 15.sp, color = colors.onBackground.copy(alpha = 0.85f))
+                    if (now >= program.start && now < program.end) {
+                        ProgressBar((now - program.start).toFloat() / (program.end - program.start),
+                            Modifier.padding(horizontal = 12.dp).width(44.dp))
+                        Text("${(program.end - now + 59_999) / 60_000} min", fontSize = 15.sp, color = colors.onBackground.copy(alpha = 0.85f))
+                    } else if (now < program.start) {
+                        Text("  ·  starts ${timeText(program.start, settings, context)}", fontSize = 15.sp, color = muted)
+                    }
                 }
                 if (settings.bool("epg.store_descriptions") && program.desc.isNotBlank()) {
-                    Text(program.desc, fontSize = 14.sp, color = muted, maxLines = 4, overflow = TextOverflow.Ellipsis,
-                        lineHeight = 20.sp, modifier = Modifier.padding(top = 10.dp))
+                    Text(program.desc, fontSize = 14.sp, color = colors.onBackground.copy(alpha = 0.8f), maxLines = 4,
+                        overflow = TextOverflow.Ellipsis, lineHeight = 19.sp, modifier = Modifier.padding(top = 8.dp))
                 }
             } else {
-                Text("No information", fontSize = 26.sp, color = muted, modifier = Modifier.padding(top = 10.dp, bottom = 4.dp))
                 Text(
-                    if (epg.isEmpty) "No TV guide loaded yet. It loads from the playlist's guide link, or add one in Settings → TV guide."
+                    if (epg.isEmpty) "No TV guide loaded yet. It loads from the playlist's guide link, or add one in Settings › TV guide."
                     else "The TV guide has no programs for this channel.",
-                    fontSize = 14.sp, color = muted,
+                    fontSize = 14.sp, color = muted, modifier = Modifier.padding(top = 6.dp),
                 )
             }
             if (status != null) Text(status, fontSize = 13.sp, color = colors.primary, modifier = Modifier.padding(top = 8.dp))
-        }
-        if (showPreview) {
-            Spacer(Modifier.width(26.dp))
-            PreviewVideo(settings, c, Modifier.size(384.dp, 216.dp).clip(RoundedCornerShape(6.dp)).background(Color.Black))
         }
     }
 }
 
 @Composable
 fun ProgressBar(fraction: Float, modifier: Modifier = Modifier) {
-    Box(modifier.height(3.dp).clip(RoundedCornerShape(2.dp)).background(Color.White.copy(alpha = 0.15f))) {
-        Box(Modifier.fillMaxHeight().fillMaxWidth(fraction.coerceIn(0f, 1f)).background(MaterialTheme.colorScheme.primary))
+    Box(modifier.height(3.dp).clip(RoundedCornerShape(2.dp)).background(Color.White.copy(alpha = 0.25f))) {
+        Box(Modifier.fillMaxHeight().fillMaxWidth(fraction.coerceIn(0f, 1f)).background(Color.White))
     }
 }
 
@@ -644,17 +656,19 @@ private fun GuideGrid(
         Column(Modifier.fillMaxSize()) {
             // Timeline header
             Row(Modifier.fillMaxWidth().height(headerH)) {
-                Text("${group.name} · ${chs.size}", fontSize = 13.sp, color = colors.onBackground, maxLines = 1,
-                    overflow = TextOverflow.Ellipsis, modifier = Modifier.width(CHANNEL_COL).padding(start = 34.dp, top = 8.dp))
+                Text(dateTimeText(now, settings, context), fontSize = 14.sp, fontWeight = FontWeight.Medium,
+                    color = colors.onBackground, maxLines = 1,
+                    overflow = TextOverflow.Ellipsis, modifier = Modifier.width(CHANNEL_COL).padding(start = 24.dp, top = 8.dp))
                 Box(Modifier.width(progWidth).fillMaxHeight()) {
                     var t = windowStart
                     while (t < windowEnd) {
-                        Text(timeText(t, settings, context), fontSize = 13.sp, color = muted,
+                        Text(timeText(t, settings, context), fontSize = 14.sp, color = colors.onBackground.copy(alpha = 0.85f),
                             modifier = Modifier.offset(x = xOf(t)).padding(start = 6.dp, top = 8.dp))
                         t += HALF_HOUR
                     }
                 }
             }
+            Box(Modifier.padding(start = CHANNEL_COL).fillMaxWidth().height(1.dp).background(colors.onBackground.copy(alpha = 0.25f)))
             // Rows
             for (i in top until minOf(chs.size, top + rows)) {
                 val c = chs[i]
@@ -686,43 +700,38 @@ private fun GuideGrid(
                     Box(Modifier.width(progWidth).fillMaxHeight()) {
                         for (cell in epg.cells(c, windowStart, windowEnd)) {
                             val focused = isRow && !onChannelCol && cell.start <= focusTime && cell.end > focusTime
+                            val cellBase = colors.onBackground.copy(alpha = 0.10f)
                             val bg = when {
                                 focused -> if (LocalSelectionWhite.current) Color.White else colors.primary
-                                cell.end <= now -> colors.surface.copy(alpha = 0.55f)
-                                cell.start <= now && settings.bool("guide.highlight_current_programs") &&
-                                    !settings.bool("guide.highlight_progress_only") -> colors.surfaceVariant
-                                else -> colors.surface
+                                else -> cellBase
                             }
                             val w = xOf(cell.end) - xOf(cell.start)
                             val fg = when {
                                 focused -> if (LocalSelectionWhite.current) Color(0xFF16181C) else Color.White
-                                cell.program == null || cell.end <= now -> muted
-                                else -> colors.onBackground
+                                cell.program == null -> colors.onBackground.copy(alpha = 0.6f)
+                                else -> colors.onBackground.copy(alpha = 0.92f)
                             }
-                            Column(
+                            val airing = cell.start <= now && cell.end > now
+                            Box(
                                 Modifier
                                     .offset(x = xOf(cell.start))
                                     .width(w)
                                     .fillMaxHeight()
-                                    .padding(top = 2.dp, bottom = 2.dp, end = 1.dp)
-                                    .clip(RoundedCornerShape(3.dp))
+                                    .padding(top = 2.dp, bottom = 2.dp, end = 2.dp)
+                                    .clip(RoundedCornerShape(2.dp))
                                     .background(bg)
-                                    .pointerInput(i, cell.start) { detectTapGestures(onTap = { onTapCell(i, cell) }, onLongPress = { onLongChannel(i) }) }
-                                    .padding(horizontal = 10.dp),
-                                verticalArrangement = Arrangement.Center,
+                                    .pointerInput(i, cell.start) { detectTapGestures(onTap = { onTapCell(i, cell) }, onLongPress = { onLongChannel(i) }) },
+                                contentAlignment = Alignment.CenterStart,
                             ) {
-                                if (!focused && cell.start <= now && cell.end > now && settings.bool("guide.highlight_current_programs") &&
-                                    settings.bool("guide.highlight_progress_only")) {
-                                    Box(Modifier.fillMaxWidth(((now - cell.start).toFloat() / (cell.end - cell.start)).coerceIn(0f, 1f))
-                                        .height(3.dp).background(colors.primary.copy(alpha = 0.8f)))
+                                // "Highlight current programs": the part already aired is a shade lighter (no lines).
+                                if (!focused && airing && settings.bool("guide.highlight_current_programs")) {
+                                    Box(Modifier.fillMaxHeight()
+                                        .fillMaxWidth(((now - cell.start).toFloat() / (cell.end - cell.start)).coerceIn(0f, 1f))
+                                        .background(Color.White.copy(alpha = 0.06f)))
                                 }
                                 if (w > 44.dp) {
-                                    Text(cell.title, fontSize = 14.sp, color = fg,
+                                    Text(cell.title, fontSize = 14.sp, color = fg, modifier = Modifier.padding(horizontal = 10.dp),
                                         maxLines = if (settings.bool("guide.two_line_titles")) 2 else 1, overflow = TextOverflow.Ellipsis)
-                                    if (w > 120.dp && cell.program != null) {
-                                        Text("${timeText(cell.start, settings, context)} – ${timeText(cell.end, settings, context)}",
-                                            fontSize = 11.sp, color = fg.copy(alpha = 0.7f), maxLines = 1)
-                                    }
                                 }
                             }
                         }
@@ -733,8 +742,10 @@ private fun GuideGrid(
         // "Now" line
         if (now >= windowStart && now < windowEnd) {
             val full = settings.bool("guide.time_indicator_full")
-            Box(Modifier.offset(x = CHANNEL_COL + xOf(now)).width(2.dp)
-                .then(if (full) Modifier.fillMaxHeight() else Modifier.height(headerH)).background(colors.primary))
+            Box(Modifier.offset(x = CHANNEL_COL + xOf(now) - 3.dp, y = headerH - 4.dp).size(7.dp).clip(RoundedCornerShape(4.dp))
+                .background(colors.primary))
+            Box(Modifier.offset(x = CHANNEL_COL + xOf(now), y = headerH).width(1.dp)
+                .then(if (full) Modifier.fillMaxHeight() else Modifier.height(8.dp)).background(colors.primary))
         }
     }
 }
@@ -768,9 +779,14 @@ private fun SideDrawer(
                 .onFocusChanged { railExpanded = it.hasFocus || groups.isEmpty() }
                 .padding(horizontal = 8.dp, vertical = 22.dp)
         ) {
-            Text(if (railExpanded) context.getString(com.novatv.app.R.string.app_name) else "KV",
-                fontSize = if (railExpanded) 20.sp else 18.sp, fontWeight = FontWeight.Bold, color = colors.primary,
-                maxLines = 1, modifier = Modifier.padding(start = 12.dp, bottom = 34.dp))
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 8.dp, bottom = 30.dp)) {
+                androidx.compose.foundation.Image(
+                    androidx.compose.ui.res.painterResource(com.novatv.app.R.drawable.app_logo), contentDescription = null,
+                    modifier = Modifier.size(40.dp).clip(RoundedCornerShape(8.dp)),
+                )
+                if (railExpanded) Text(context.getString(com.novatv.app.R.string.app_name), fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold, color = Color(0xFFFFD666), maxLines = 1, modifier = Modifier.padding(start = 12.dp))
+            }
             MAIN_MENU.forEach { d ->
                 TvRow(
                     modifier = if (d == MenuDest.GUIDE) Modifier.focusRequester(menuFocus) else Modifier,
@@ -832,16 +848,16 @@ private fun Welcome(onAdd: () -> Unit, onSettings: () -> Unit) {
     val addFocus = remember { FocusRequester() }
     val settingsFocus = remember { FocusRequester() }
     Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-        Text(
-            "King Vegas TV doesn't provide any sources of TV channels. " +
-                "Add the playlist from your IPTV provider to be able to watch TV channels.",
-            fontSize = 16.sp, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.8f),
-            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-            modifier = Modifier.width(620.dp)
-                .border(1.dp, MaterialTheme.colorScheme.onBackground.copy(alpha = 0.3f))
-                .padding(horizontal = 18.dp, vertical = 12.dp),
+        androidx.compose.foundation.Image(
+            androidx.compose.ui.res.painterResource(com.novatv.app.R.drawable.app_logo), contentDescription = null,
+            modifier = Modifier.size(96.dp).clip(RoundedCornerShape(18.dp)),
         )
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(20.dp))
+        Text("King Vegas TV does not provide any content", fontSize = 18.sp, fontWeight = FontWeight.Medium,
+            color = MaterialTheme.colorScheme.onBackground)
+        Text("Add your own playlist to start watching", fontSize = 15.sp,
+            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.75f), modifier = Modifier.padding(top = 4.dp))
+        Spacer(Modifier.height(22.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             // Left / Right move between the two buttons here (instead of opening the side menu).
             TvRow(modifier = Modifier.width(170.dp).focusRequester(addFocus)
