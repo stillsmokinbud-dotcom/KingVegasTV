@@ -29,7 +29,7 @@ import kotlinx.coroutines.launch
 fun UrlListScreen(title: String, subtitle: String, key: String) {
     val repo = LocalContext.current.app.settings
     val scope = rememberCoroutineScope()
-    val items by repo.listFlow(key).collectAsState(initial = emptyList())
+    val items by remember(key) { repo.listFlow(key) }.collectAsState(initial = emptyList())
     var adding by remember { mutableStateOf(false) }
     var removing by remember { mutableStateOf<String?>(null) }
     val fr = remember { FocusRequester() }
@@ -67,7 +67,7 @@ fun GroupPickerScreen(title: String, subtitle: String, key: String) {
     val repo = context.app.settings
     val channels by context.app.playlists.channels.collectAsState()
     val groups = remember(channels) { channels.map { it.group }.distinct() }
-    val picked by repo.listFlow(key).collectAsState(initial = emptyList())
+    val picked by remember(key) { repo.listFlow(key) }.collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
     val fr = remember { FocusRequester() }
 
