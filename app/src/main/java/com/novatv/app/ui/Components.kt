@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
+
 package com.novatv.app.ui
 
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -58,6 +60,8 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.foundation.focusGroup
 import androidx.compose.ui.window.Dialog
 
 /** True while the surrounding [TvRow] has focus (lets row content pick readable colors). */
@@ -92,6 +96,9 @@ fun TvRow(
 ) {
     var focused by remember { mutableStateOf(false) }
     var longFired by remember { mutableStateOf(false) }
+    // Only react to an OK press that started on this row (a held OK from the previous
+    // screen must not "click" the first row of a menu that just opened).
+    var downSeen by remember { mutableStateOf(false) }
     val colors = MaterialTheme.colorScheme
     val white = LocalSelectionWhite.current
     val bg = when {
@@ -114,15 +121,17 @@ fun TvRow(
                 when (e.type) {
                     KeyEventType.KeyDown -> {
                         if (e.nativeKeyEvent.repeatCount == 0) {
+                            downSeen = true
                             longFired = false
-                        } else if (!longFired && onLongClick != null) {
+                        } else if (downSeen && !longFired && onLongClick != null) {
                             longFired = true
                             onLongClick()
                         }
                         true
                     }
                     KeyEventType.KeyUp -> {
-                        if (!longFired) onClick()
+                        if (downSeen && !longFired) onClick()
+                        downSeen = false
                         longFired = false
                         true
                     }
@@ -179,7 +188,13 @@ fun SidePanel(title: String, width: Dp = 500.dp, content: @Composable () -> Unit
                 Text(title, fontSize = 24.sp, fontWeight = FontWeight.Medium, color = colors.onSurface,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            Box(Modifier.fillMaxSize().padding(horizontal = 10.dp, vertical = 8.dp)) { content() }
+            // Keep the remote inside the panel (Left must not jump to the screen behind it).
+            Box(
+                Modifier.fillMaxSize()
+                    .focusProperties { exit = { androidx.compose.ui.focus.FocusRequester.Cancel } }
+                    .focusGroup()
+                    .padding(horizontal = 10.dp, vertical = 8.dp)
+            ) { content() }
         }
     }
 }
