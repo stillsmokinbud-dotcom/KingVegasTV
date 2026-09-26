@@ -46,6 +46,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
@@ -321,7 +322,12 @@ fun VodPlayerScreen(
     }
     BackHandler { saveResume(); onExit() }
 
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
+    Box(
+        Modifier.fillMaxSize().background(Color.Black)
+            // If focus ever lands on the Compose side, pass remote keys on to the player controls.
+            .onKeyEvent { e -> e.key != Key.Back && viewRef?.let { v -> !v.hasFocus() && v.dispatchKeyEvent(e.nativeKeyEvent) } == true }
+            .focusable(),
+    ) {
         AndroidView(
             factory = { ctx ->
                 PlayerView(ctx).apply {
