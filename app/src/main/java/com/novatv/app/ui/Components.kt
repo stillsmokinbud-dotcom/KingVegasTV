@@ -380,7 +380,7 @@ fun TextDialog(
         )
         Spacer(Modifier.heightIn(min = 12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            TvRow(modifier = Modifier.weight(1f), onClick = { onDone(text.trim()) }) {
+            TvRow(modifier = Modifier.weight(1f), onClick = { onDone(if (secret) text else text.trim()) }) {
                 Text("OK", color = rowContentColor())
             }
             TvRow(modifier = Modifier.weight(1f), onClick = onDismiss) {
