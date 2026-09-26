@@ -1,20 +1,21 @@
 # One-click deploy of the license server on Render.com (Blueprint).
+# Free plan: no permanent disk, so accounts reset when the server restarts.
+# Your admin account is recreated automatically from ADMIN_EMAIL / ADMIN_PASSWORD.
+# For real sales switch to plan: starter and add the disk block below.
 services:
   - type: web
     name: kingvegastv-server
     runtime: node
     rootDir: server
-    plan: starter
+    plan: free
     buildCommand: npm install --omit=dev
     startCommand: node server.js
     healthCheckPath: /health
-    disk:
-      name: data
-      mountPath: /data
-      sizeGB: 1
+    # disk:
+    #   name: data
+    #   mountPath: /data
+    #   sizeGB: 1
     envVars:
-      - key: DATA_DIR
-        value: /data
       - key: APP_NAME
         value: King Vegas TV
       - key: DEVICE_LIMIT
@@ -24,8 +25,4 @@ services:
       - key: ADMIN_EMAIL
         sync: false
       - key: ADMIN_PASSWORD
-        sync: false
-      - key: STRIPE_SECRET_KEY
-        sync: false
-      - key: STRIPE_WEBHOOK_SECRET
         sync: false
