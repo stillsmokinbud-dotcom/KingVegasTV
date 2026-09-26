@@ -1,4 +1,5 @@
 package com.novatv.app.ui
+
 import androidx.compose.material.icons.filled.*
 import android.view.ViewGroup
 import androidx.activity.compose.BackHandler
@@ -153,8 +154,10 @@ fun PlayerScreen(
         if (numberBuffer.isEmpty()) return@LaunchedEffect
         delay(settings.int("remote.number_delay") * 1000L)
         val n = numberBuffer.toIntOrNull()
-        val target = queue.indexOfFirst { it.number == n }
-        if (target >= 0) switchTo(target)
+        // Channel number first; playlists without numbers use the position in the list (1 = first).
+        val target = queue.indexOfFirst { it.number == n }.takeIf { it >= 0 }
+            ?: n?.minus(1)?.takeIf { it in queue.indices }
+        if (target != null) switchTo(target)
         numberBuffer = ""
     }
 
@@ -544,7 +547,7 @@ private fun resizeModeFor(aspect: String): Int = when (aspect) {
     else -> AspectRatioFrameLayout.RESIZE_MODE_FIT // TODO: forced 16:9 / 4:3
 }
 
-private fun digitOf(key: Key): Char? = when (key) {
+internal fun digitOf(key: Key): Char? = when (key) {
     Key.Zero, Key.NumPad0 -> '0'
     Key.One, Key.NumPad1 -> '1'
     Key.Two, Key.NumPad2 -> '2'
