@@ -1,0 +1,14 @@
+{
+  "name": "novatv-license-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Accounts, Premium plans (Stripe), devices and admin panel for the King Vegas TV app",
+  "main": "server.js",
+  "type": "commonjs",
+  "engines": { "node": ">=22.13" },
+  "scripts": { "start": "node server.js" },
+  "dependencies": {
+    "express": "^5.1.0",
+    "stripe": "^18.0.0"
+  }
+}

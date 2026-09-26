@@ -1,0 +1,31 @@
+# One-click deploy of the license server on Render.com (Blueprint).
+services:
+  - type: web
+    name: kingvegastv-server
+    runtime: node
+    rootDir: server
+    plan: starter
+    buildCommand: npm install --omit=dev
+    startCommand: node server.js
+    healthCheckPath: /health
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: DATA_DIR
+        value: /data
+      - key: APP_NAME
+        value: King Vegas TV
+      - key: DEVICE_LIMIT
+        value: "10"
+      - key: PUBLIC_URL
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
