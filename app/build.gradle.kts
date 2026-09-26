@@ -15,7 +15,7 @@ android {
         minSdk = 23          // Fire TV Stick (2nd gen+) and Android TV 6.0+
         targetSdk = 35
         versionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
-        versionName = "0.1." + (System.getenv("GITHUB_RUN_NUMBER") ?: "0")
+        versionName = "1.0." + (System.getenv("GITHUB_RUN_NUMBER") ?: "0")
         // Address of your license server (the /server folder). Can also be changed in
         // Settings › Premium account › Account server.
         val serverUrl = System.getenv("NOVATV_SERVER_URL")?.takeIf { it.isNotBlank() } ?: "https://kingvegastv-server.onrender.com"
@@ -81,6 +81,8 @@ dependencies {
 
     // Player (ExoPlayer)
     implementation("androidx.media3:media3-exoplayer:1.5.1")
+    // Installs the Compose/Media3 startup profiles at install time, so the very first launch is smooth.
+    implementation("androidx.profileinstaller:profileinstaller:1.4.1")
     implementation("androidx.media3:media3-exoplayer-hls:1.5.1")
     implementation("androidx.media3:media3-datasource-okhttp:1.5.1")
     implementation("androidx.media3:media3-ui:1.5.1")
