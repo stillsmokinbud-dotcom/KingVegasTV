@@ -56,7 +56,10 @@ data class Episode(
 )
 
 @Serializable
-private data class VodCache(val movies: List<VodItem> = emptyList(), val series: List<VodItem> = emptyList(), val updated: Long = 0)
+private data class VodCache(val movies: List<VodItem> = emptyList(), val series: List<VodItem> = emptyList(), val updated: Long = 0, val version: Int = 0)
+
+/** Bump when the loader changes so old (possibly incomplete) caches are downloaded again. */
+private const val VOD_CACHE_VERSION = 2
 
 enum class VodKind { MOVIES, SHOWS }
 
@@ -128,7 +131,7 @@ class VodRepository(
                     val ua = p.userAgent.ifBlank { DEFAULT_USER_AGENT }
                     val movies = loadMovies(p, login, ua)
                     val series = loadSeries(p, login, ua)
-                    writeCacheFile(p.id, VodCache(movies, series, System.currentTimeMillis()))
+                    writeCacheFile(p.id, VodCache(movies, series, System.currentTimeMillis(), VOD_CACHE_VERSION))
                     total += movies.size + series.size
                 } catch (e: Exception) {
                     errors += "${p.name}: ${e.message ?: e.javaClass.simpleName}"
@@ -143,7 +146,11 @@ class VodRepository(
     suspend fun refreshIfStale() = lock.withLock {
         val stale = withContext(Dispatchers.IO) {
             playlists.readPlaylists().filter { it.enabled && it.includeVod }.any { p ->
-                loginFor(p) != null && (readCache(p.id)?.updated ?: 0L) < System.currentTimeMillis() - 24 * 3_600_000L
+                val c = readCache(p.id)
+                val now = System.currentTimeMillis()
+                loginFor(p) != null && (c == null || c.version < VOD_CACHE_VERSION || c.updated < now - 24 * 3_600_000L ||
+                    // Nothing came down last time (server hiccup): try again after 30 minutes.
+                    ((c.movies.isEmpty() || c.series.isEmpty()) && c.updated < now - 30 * 60_000L))
             }
         }
         if (stale) refreshLocked()
@@ -217,44 +224,136 @@ class VodRepository(
             .mapNotNull { it as? JsonObject }
             .associate { it["category_id"].str() to (it["category_name"].str() ?: "Uncategorized") }
 
+    private fun movieItem(p: Playlist, l: Login, cats: Map<String?, String>, o: Map<String, String>): VodItem? {
+        val id = o["stream_id"] ?: return null
+        val ext = o["container_extension"] ?: "mp4"
+        val name = o["name"] ?: o["title"] ?: "Movie $id"
+        return VodItem(
+            id = "${p.id}:m$id",
+            playlistId = p.id,
+            name = name,
+            category = cats[o["category_id"]] ?: "Uncategorized",
+            poster = o["stream_icon"] ?: o["cover"],
+            rating = o["rating"]?.takeIf { it != "0" },
+            year = o["year"] ?: YEAR.find(name)?.groupValues?.get(1),
+            url = "${l.base}/movie/${l.user}/${l.pass}/$id.$ext",
+            added = o["added"]?.toLongOrNull()?.times(1000) ?: 0,
+        )
+    }
+
     private fun loadMovies(p: Playlist, l: Login, ua: String): List<VodItem> {
         val cats = categories(l, "get_vod_categories", ua)
-        return (get("${api(l)}&action=get_vod_streams", ua) as? JsonArray).orEmpty().mapNotNull { el ->
-            val o = el as? JsonObject ?: return@mapNotNull null
-            val id = o["stream_id"].str() ?: return@mapNotNull null
-            val ext = o["container_extension"].str() ?: "mp4"
-            VodItem(
-                id = "${p.id}:m$id",
-                playlistId = p.id,
-                name = o["name"].str() ?: "Movie $id",
-                category = cats[o["category_id"].str()] ?: "Uncategorized",
-                poster = o["stream_icon"].str()?.takeIf { it.isNotBlank() },
-                rating = o["rating"].str()?.takeIf { it.isNotBlank() && it != "0" },
-                year = o["year"].str() ?: Regex("""\((\d{4})\)""").find(o["name"].str().orEmpty())?.groupValues?.get(1),
-                url = "${l.base}/movie/${l.user}/${l.pass}/$id.$ext",
-                added = o["added"].str()?.toLongOrNull()?.times(1000) ?: 0,
-            )
-        }.distinctBy { it.id }
+        // 1) Everything in one streamed request (read item by item, so even 100k+ movies fit in memory).
+        val all = runCatching {
+            val out = ArrayList<VodItem>()
+            streamObjects("${api(l)}&action=get_vod_streams", ua) { o -> movieItem(p, l, cats, o)?.let(out::add) }
+            out
+        }.getOrNull()
+        if (!all.isNullOrEmpty()) return all.distinctBy { it.id }
+        // 2) Some servers time out or refuse the full list: fetch one category at a time instead.
+        val out = ArrayList<VodItem>()
+        var fails = 0
+        for ((catId, _) in cats) {
+            if (catId == null) continue
+            val ok = runCatching {
+                streamObjects("${api(l)}&action=get_vod_streams&category_id=${enc(catId)}", ua) { o ->
+                    movieItem(p, l, cats, o)?.let(out::add)
+                }
+            }.isSuccess
+            if (!ok && ++fails > 10 && out.isEmpty()) break
+        }
+        if (out.isEmpty() && all == null) throw IOException("The server didn't send the movie list")
+        return out.distinctBy { it.id }
+    }
+
+    private fun seriesItem(p: Playlist, cats: Map<String?, String>, o: Map<String, String>): VodItem? {
+        val id = o["series_id"] ?: return null
+        return VodItem(
+            id = "${p.id}:s$id",
+            playlistId = p.id,
+            name = o["name"] ?: o["title"] ?: "Series $id",
+            category = cats[o["category_id"]] ?: "Uncategorized",
+            poster = o["cover"],
+            rating = o["rating"]?.takeIf { it != "0" },
+            year = o["releaseDate"]?.take(4) ?: o["release_date"]?.take(4) ?: o["year"],
+            plot = o["plot"],
+            seriesId = id,
+            added = o["last_modified"]?.toLongOrNull()?.times(1000) ?: 0,
+        )
     }
 
     private fun loadSeries(p: Playlist, l: Login, ua: String): List<VodItem> {
         val cats = categories(l, "get_series_categories", ua)
-        return (get("${api(l)}&action=get_series", ua) as? JsonArray).orEmpty().mapNotNull { el ->
-            val o = el as? JsonObject ?: return@mapNotNull null
-            val id = o["series_id"].str() ?: return@mapNotNull null
-            VodItem(
-                id = "${p.id}:s$id",
-                playlistId = p.id,
-                name = o["name"].str() ?: "Series $id",
-                category = cats[o["category_id"].str()] ?: "Uncategorized",
-                poster = o["cover"].str()?.takeIf { it.isNotBlank() },
-                rating = o["rating"].str()?.takeIf { it.isNotBlank() && it != "0" },
-                year = o["releaseDate"].str()?.take(4) ?: o["year"].str(),
-                plot = o["plot"].str(),
-                seriesId = id,
-                added = o["last_modified"].str()?.toLongOrNull()?.times(1000) ?: 0,
-            )
-        }.distinctBy { it.id }
+        val out = ArrayList<VodItem>()
+        val full = runCatching {
+            streamObjects("${api(l)}&action=get_series", ua) { o -> seriesItem(p, cats, o)?.let(out::add) }
+        }.isSuccess
+        if (!full || out.isEmpty()) {
+            out.clear()
+            for ((catId, _) in cats) {
+                if (catId == null) continue
+                runCatching {
+                    streamObjects("${api(l)}&action=get_series&category_id=${enc(catId)}", ua) { o ->
+                        seriesItem(p, cats, o)?.let(out::add)
+                    }
+                }
+            }
+        }
+        return out.distinctBy { it.id }
+    }
+
+    /** Big lists get a longer timeout than normal calls. */
+    private val bigHttp by lazy {
+        http.newBuilder().readTimeout(3, java.util.concurrent.TimeUnit.MINUTES).callTimeout(10, java.util.concurrent.TimeUnit.MINUTES).build()
+    }
+
+    /**
+     * Reads a JSON array of objects one object at a time with Android's streaming reader, keeping only
+     * the simple (text/number) fields. Handles servers that send an object map instead of an array.
+     */
+    private fun streamObjects(url: String, ua: String, onItem: (Map<String, String>) -> Unit) {
+        val req = Request.Builder().url(url).header("User-Agent", ua).build()
+        bigHttp.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) throw IOException("Server returned ${resp.code}")
+            val body = resp.body ?: return
+            android.util.JsonReader(java.io.InputStreamReader(body.byteStream(), Charsets.UTF_8)).use { r ->
+                r.isLenient = true
+                fun readObj(): Map<String, String> {
+                    val m = HashMap<String, String>(24)
+                    r.beginObject()
+                    while (r.hasNext()) {
+                        val k = r.nextName()
+                        when (r.peek()) {
+                            android.util.JsonToken.STRING, android.util.JsonToken.NUMBER ->
+                                r.nextString().takeIf { it.isNotBlank() && it != "null" }?.let { m[k] = it.trim() }
+                            android.util.JsonToken.BOOLEAN -> m[k] = r.nextBoolean().toString()
+                            else -> r.skipValue()
+                        }
+                    }
+                    r.endObject()
+                    return m
+                }
+                when (r.peek()) {
+                    android.util.JsonToken.BEGIN_ARRAY -> {
+                        r.beginArray()
+                        while (r.hasNext()) {
+                            if (r.peek() == android.util.JsonToken.BEGIN_OBJECT) onItem(readObj()) else r.skipValue()
+                        }
+                        r.endArray()
+                    }
+                    android.util.JsonToken.BEGIN_OBJECT -> {
+                        // {"1": {...}, "2": {...}} style
+                        r.beginObject()
+                        while (r.hasNext()) {
+                            r.nextName()
+                            if (r.peek() == android.util.JsonToken.BEGIN_OBJECT) onItem(readObj()) else r.skipValue()
+                        }
+                        r.endObject()
+                    }
+                    else -> r.skipValue()
+                }
+            }
+        }
     }
 
     @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
@@ -282,6 +381,7 @@ class VodRepository(
         }
     }
 
+    private val YEAR = Regex("""\((\d{4})\)""")
     private fun JsonElement?.str(): String? = (this as? JsonPrimitive)?.content?.takeIf { it != "null" && it.isNotEmpty() }
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
 }
