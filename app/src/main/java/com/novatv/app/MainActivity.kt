@@ -149,7 +149,11 @@ private fun AppRoot(settings: AppSettings, onFinish: () -> Unit) {
     var pendingSettingsPage by remember { mutableStateOf<String?>(null) }
     var askPinForSettings by remember { mutableStateOf(false) }
 
-    fun push(s: Screen) = stack.add(s)
+    fun push(s: Screen) {
+        // Watching a channel: the guide comes back on the channel, not on the menu.
+        if (s is Screen.Player) app.guideMenuReturn = null
+        stack.add(s)
+    }
     fun pop() { if (stack.size > 1) stack.removeAt(stack.lastIndex) }
 
     // Startup: cached channels first, then updates that are due, then the start screen.
