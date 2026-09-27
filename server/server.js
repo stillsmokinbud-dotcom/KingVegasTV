@@ -18,7 +18,7 @@ const express = require('express');
 const env = process.env;
 const PORT = +(env.PORT || 8080);
 const PUBLIC_URL = (env.PUBLIC_URL || `http://localhost:${PORT}`).replace(/\/+$/, '');
-const APP_NAME = env.APP_NAME || 'King Vegas TV';
+const APP_NAME = env.APP_NAME || 'KINGVEGAS TV';
 const ADMIN_EMAIL = (env.ADMIN_EMAIL || '').trim().toLowerCase();
 const ADMIN_PASSWORD = env.ADMIN_PASSWORD || '';
 const DEVICE_LIMIT = +(env.DEVICE_LIMIT || 10);
@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS tokens (
   created INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS revoked (user_id INTEGER NOT NULL, device_id TEXT NOT NULL, PRIMARY KEY (user_id, device_id));
 CREATE TABLE IF NOT EXISTS payments (
   id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, plan TEXT, amount INTEGER, ref TEXT, created INTEGER
 );
@@ -88,6 +89,25 @@ function checkPassword(pw, stored) {
   return crypto.timingSafeEqual(hash, Buffer.from(hashHex, 'hex'));
 }
 const newToken = () => crypto.randomBytes(32).toString('hex');
+
+// Device sign-ins use signed tokens, so a TV stays signed in even when the free server restarts
+// and forgets its database (the admin account is recreated from ADMIN_EMAIL / ADMIN_PASSWORD).
+const TOKEN_SECRET = env.TOKEN_SECRET || crypto.createHash('sha256').update(`kvtv:${ADMIN_EMAIL}:${ADMIN_PASSWORD}`).digest('hex');
+function signDeviceToken(email, deviceId, name) {
+  const body = Buffer.from(JSON.stringify({ e: email, d: deviceId, n: String(name || 'Device').slice(0, 60), t: Date.now() })).toString('base64url');
+  const sig = crypto.createHmac('sha256', TOKEN_SECRET).update(body).digest('base64url');
+  return `v2.${body}.${sig}`;
+}
+function verifyDeviceToken(tok) {
+  const [v, body, sig] = String(tok || '').split('.');
+  if (v !== 'v2' || !body || !sig) return null;
+  const want = crypto.createHmac('sha256', TOKEN_SECRET).update(body).digest('base64url');
+  if (want.length !== sig.length || !crypto.timingSafeEqual(Buffer.from(want), Buffer.from(sig))) return null;
+  try { return JSON.parse(Buffer.from(body, 'base64url').toString('utf8')); } catch { return null; }
+}
+function revoke(userId, deviceId) {
+  if (deviceId) db.prepare('INSERT OR IGNORE INTO revoked (user_id, device_id) VALUES (?, ?)').run(userId, deviceId);
+}
 const userByEmail = e => db.prepare('SELECT * FROM users WHERE email = ?').get(String(e || '').trim().toLowerCase());
 const userById = id => db.prepare('SELECT * FROM users WHERE id = ?').get(id);
 function isAdmin(u) { return !!u && (u.role === 'admin' || (ADMIN_EMAIL && u.email === ADMIN_EMAIL)); }
@@ -166,8 +186,22 @@ function authFromRequest(req) {
   const cookieTok = (req.headers.cookie || '').split(/;\s*/).map(c => c.split('=')).find(([k]) => k === 'novatv_session')?.[1];
   const tok = h.startsWith('Bearer ') ? h.slice(7) : cookieTok;
   if (!tok) return null;
-  const t = db.prepare('SELECT * FROM tokens WHERE token = ?').get(tok);
-  if (!t) return null;
+  let t = db.prepare('SELECT * FROM tokens WHERE token = ?').get(tok);
+  if (!t) {
+    // Unknown token: a signed device token from before a server restart -> restore the device.
+    const p = verifyDeviceToken(tok);
+    const u = p && userByEmail(p.e);
+    if (!u || !p.d) return null;
+    if (db.prepare('SELECT 1 FROM revoked WHERE user_id = ? AND device_id = ?').get(u.id, p.d)) return null;
+    if (!db.prepare('SELECT 1 FROM devices WHERE user_id = ? AND device_id = ?').get(u.id, p.d)) {
+      const count = db.prepare('SELECT COUNT(*) AS n FROM devices WHERE user_id = ?').get(u.id).n;
+      if (count >= DEVICE_LIMIT && !isAdmin(u)) return null;
+      db.prepare('INSERT INTO devices (user_id, device_id, name, last_seen) VALUES (?, ?, ?, ?)').run(u.id, p.d, p.n || 'Device', Date.now());
+    }
+    db.prepare('INSERT OR IGNORE INTO tokens (token, user_id, device_id, created) VALUES (?, ?, ?, ?)').run(tok, u.id, p.d, Date.now());
+    t = db.prepare('SELECT * FROM tokens WHERE token = ?').get(tok);
+    if (!t) return null;
+  }
   const u = userById(t.user_id);
   return u ? { user: u, token: t } : null;
 }
@@ -218,8 +252,9 @@ app.post('/api/login', (req, res) => {
   } else {
     db.prepare('UPDATE devices SET name = ?, last_seen = ? WHERE id = ?').run(String(deviceName || existing.name).slice(0, 60), Date.now(), existing.id);
   }
-  const token = newToken();
-  db.prepare('INSERT INTO tokens (token, user_id, device_id, created) VALUES (?, ?, ?, ?)').run(token, u.id, deviceId, Date.now());
+  db.prepare('DELETE FROM revoked WHERE user_id = ? AND device_id = ?').run(u.id, deviceId);
+  const token = signDeviceToken(u.email, deviceId, deviceName);
+  db.prepare('INSERT OR REPLACE INTO tokens (token, user_id, device_id, created) VALUES (?, ?, ?, ?)').run(token, u.id, deviceId, Date.now());
   res.json({ token, account: accountJson(u, deviceId) });
 });
 
@@ -236,6 +271,7 @@ app.post('/api/logout', (req, res) => {
   const a = authFromRequest(req);
   if (a) {
     if (a.token.device_id) db.prepare('DELETE FROM devices WHERE user_id = ? AND device_id = ?').run(a.user.id, a.token.device_id);
+    revoke(a.user.id, a.token.device_id);
     db.prepare('DELETE FROM tokens WHERE token = ?').run(a.token.token);
   }
   res.json({ ok: true });
@@ -259,6 +295,7 @@ function removeDevice(userId, deviceRowId) {
   if (!d) return;
   db.prepare('DELETE FROM tokens WHERE user_id = ? AND device_id = ?').run(userId, d.device_id);
   db.prepare('DELETE FROM devices WHERE id = ?').run(d.id);
+  revoke(userId, d.device_id);
 }
 
 // ================================================================== WEBSITE
@@ -495,6 +532,7 @@ app.post('/admin/users/:id/revoke', (req, res) => {
 });
 app.post('/admin/users/:id/signout', (req, res) => {
   const me = requireAdmin(req, res); if (!me) return;
+  for (const d of db.prepare('SELECT device_id FROM devices WHERE user_id = ?').all(+req.params.id)) revoke(+req.params.id, d.device_id);
   db.prepare('DELETE FROM tokens WHERE user_id = ? AND device_id IS NOT NULL').run(+req.params.id);
   db.prepare('DELETE FROM devices WHERE user_id = ?').run(+req.params.id);
   res.redirect('/admin');
