@@ -191,6 +191,11 @@ fun GuideScreen(
             val pick = groups.indexOfFirst { it.name == last && it.channels.isNotEmpty() }.takeIf { it >= 0 }
                 ?: groups.indexOfFirst { it.channels.isNotEmpty() }.takeIf { it >= 0 } ?: 0
             if (pick != groupIndex) { groupIndex = pick; row = 0; top = 0 }
+            // TiviMate: coming back from full screen, the guide opens on the channel you were watching.
+            if (!groupChosen) {
+                val at = groups[pick].channels.indexOfFirst { it.id == app.lastPlayedId }
+                if (at >= 0) row = at
+            }
             groupChosen = true
         }
     }
@@ -200,9 +205,14 @@ fun GuideScreen(
     val rows = settings.int("epg.rows").coerceIn(5, 12)
     val windowMs = settings.int("epg.timeline_hours").coerceAtLeast(1) * HOUR * 3 / 2
     if (row > chs.lastIndex) row = chs.lastIndex.coerceAtLeast(0)
-    if (row < top) top = row
-    if (row >= top + rows) top = row - rows + 1
+    // TiviMate: the highlighted row stays in the middle while the list scrolls under it.
+    top = (row - rows / 2).coerceIn(0, (chs.size - rows).coerceAtLeast(0))
     val channel = chs.getOrNull(row)
+    // TiviMate: the preview keeps playing what you were watching; moving through the guide
+    // doesn't switch it. Before anything was played it follows the highlighted channel.
+    val playingChannel = remember(app.lastPlayedId, channels) {
+        app.lastPlayedId?.let { id -> channels.firstOrNull { it.id == id } }
+    }
 
     fun cellAt(c: Channel, t: Long): GuideCell =
         epg.cells(c, windowStart - 6 * HOUR, windowStart + windowMs + 6 * HOUR)
@@ -234,7 +244,9 @@ fun GuideScreen(
                     Key.PageUp, Key.ChannelUp -> -rows
                     else -> rows
                 }
-                row = (row + step).coerceIn(0, chs.lastIndex)
+                // One step wraps around the list like TiviMate; page jumps stop at the ends.
+                row = if (step == 1 || step == -1) ((row + step) % chs.size + chs.size) % chs.size
+                else (row + step).coerceIn(0, chs.lastIndex)
                 return true
             }
             Key.DirectionRight -> {
@@ -306,7 +318,16 @@ fun GuideScreen(
                 }
             }
             settings.bool("guide.back_to_current") && scrolled -> resetToNow()
-            else -> { drawerOnMenu = true; drawerOpen = true }
+            // TiviMate: Back from the guide returns to the channel playing full screen.
+            playingChannel != null -> onPlay(app.playQueue.ifEmpty { channels }, playingChannel)
+            else -> {
+                val now = System.currentTimeMillis()
+                if (now - lastBackInMenu < 2500) (context as? android.app.Activity)?.finish()
+                else {
+                    lastBackInMenu = now
+                    android.widget.Toast.makeText(context, "Press Back again to exit", android.widget.Toast.LENGTH_SHORT).show()
+                }
+            }
         }
     }
 
@@ -443,7 +464,7 @@ fun GuideScreen(
                 Column(Modifier.fillMaxSize()) {
                     val focusedCell = if (onChannelCol) null else cellAt(c, focusTime)
                     val shown: Program? = focusedCell?.program ?: epg.at(c, now)
-                    TopInfo(settings, c, shown, favorites, epg, now, epgStatus ?: playlistStatus)
+                    TopInfo(settings, c, playingChannel ?: c, shown, favorites, epg, now, epgStatus ?: playlistStatus)
                     GuideGrid(
                         settings = settings, group = group, epg = epg, now = now,
                         top = top, rows = rows, row = row, onChannelCol = onChannelCol,
@@ -601,7 +622,7 @@ fun GuideScreen(
 
 @Composable
 private fun TopInfo(
-    settings: AppSettings, c: Channel, program: Program?, favorites: List<String>,
+    settings: AppSettings, c: Channel, preview: Channel, program: Program?, favorites: List<String>,
     epg: EpgData, now: Long, status: String?,
 ) {
     // TiviMate layout: live preview top-left, program info to its right, channel name top-right.
@@ -611,7 +632,7 @@ private fun TopInfo(
     val showPreview = settings.bool("epg.show_preview")
     Row(Modifier.fillMaxWidth().height(230.dp).padding(start = 24.dp, end = 30.dp, top = 18.dp, bottom = 8.dp)) {
         if (showPreview) {
-            PreviewVideo(settings, c, Modifier.size(356.dp, 200.dp).clip(RoundedCornerShape(6.dp)).background(Color.Black))
+            PreviewVideo(settings, preview, Modifier.size(356.dp, 200.dp).clip(RoundedCornerShape(6.dp)).background(Color.Black))
             Spacer(Modifier.width(24.dp))
         }
         Column(Modifier.weight(1f)) {
@@ -686,18 +707,22 @@ fun ChannelLogo(settings: AppSettings, c: Channel, width: Dp) {
     }
 }
 
-/** Live mini-preview of the highlighted channel. */
+/** Live mini-preview: the channel you're watching (or the highlighted one if nothing played yet). */
 @Composable
 private fun PreviewVideo(settings: AppSettings, channel: Channel, modifier: Modifier) {
     val context = LocalContext.current
-    val repo = context.app.playlists
-    val built = remember { PlayerFactory(context, repo.http).create(settings, DEFAULT_USER_AGENT) }
-    DisposableEffect(Unit) { onDispose { built.player.release() } }
+    val app = context.app
+    val repo = app.playlists
+    // Same player as full screen: coming back to the guide doesn't restart the stream.
+    val built = remember { app.shared.obtain(settings) }
+    DisposableEffect(Unit) { app.shared.attach(); onDispose { app.shared.detach() } }
     LaunchedEffect(channel.id) {
+        if (app.shared.isPlaying(channel.id)) { built.player.playWhenReady = true; return@LaunchedEffect }
         delay(700) // don't start a stream for every channel you scroll past
         built.dataSource.setUserAgent(channel.userAgent ?: repo.userAgentFor(repo.playlistFor(channel), settings))
-        built.player.setMediaItem(PlayerFactory.mediaItem(channel.url))
+        built.player.setMediaItem(PlayerFactory.mediaItem(PlayerFactory.viaUdpProxy(channel.url, settings)))
         built.player.prepare()
+        app.shared.markLoaded(channel.id)
         built.player.playWhenReady = true
     }
     AndroidView(
@@ -707,9 +732,13 @@ private fun PreviewVideo(settings: AppSettings, channel: Channel, modifier: Modi
                 useController = false
                 isFocusable = false
                 descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+                // Keep the last picture while switching instead of flashing black.
+                setKeepContentOnPlayerReset(true)
                 player = built.player
             }
         },
+        update = { it.player = built.player },
+        onRelease = { it.player = null },
         modifier = modifier,
     )
 }
