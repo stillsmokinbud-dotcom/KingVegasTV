@@ -18,6 +18,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import com.novatv.app.playlist.PlaylistType
 import com.novatv.app.ui.AddPlaylistScreen
@@ -121,6 +122,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
+          Box(Modifier.fillMaxSize()) {
             val settings by app.settings.settings.collectAsState(initial = null)
             val s = settings
             if (s == null) {
@@ -137,6 +139,37 @@ class MainActivity : ComponentActivity() {
                     AppTheme(s) { AppRoot(s, onFinish = { finish() }) }
                 }
             }
+            WelcomeLogo()
+          }
+        }
+    }
+
+    /**
+     * The very first time the app opens after it's installed: the KINGVEGAS TV logo, which then fades
+     * away into the TV guide. Only once — never again on later starts (remembered on the device).
+     */
+    @androidx.compose.runtime.Composable
+    private fun WelcomeLogo() {
+        val prefs = androidx.compose.runtime.remember { getSharedPreferences("kv_welcome", MODE_PRIVATE) }
+        var show by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(!prefs.getBoolean("shown", false)) }
+        if (!show) return
+        val fade = androidx.compose.runtime.remember { androidx.compose.animation.core.Animatable(1f) }
+        androidx.compose.runtime.LaunchedEffect(Unit) {
+            prefs.edit().putBoolean("shown", true).apply()
+            kotlinx.coroutines.delay(2200)
+            fade.animateTo(0f, androidx.compose.animation.core.tween(900))
+            show = false
+        }
+        Box(
+            Modifier.fillMaxSize()
+                .graphicsLayer { alpha = fade.value }
+                .background(Color(0xFF14091F)),
+            contentAlignment = androidx.compose.ui.Alignment.Center,
+        ) {
+            androidx.compose.foundation.Image(
+                androidx.compose.ui.res.painterResource(R.drawable.tv_banner), contentDescription = "KINGVEGAS TV",
+                contentScale = androidx.compose.ui.layout.ContentScale.Fit, modifier = Modifier.fillMaxSize(),
+            )
         }
     }
 }
