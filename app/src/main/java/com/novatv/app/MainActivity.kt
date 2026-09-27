@@ -273,6 +273,7 @@ private fun AppRoot(settings: AppSettings, onFinish: () -> Unit) {
                 type = screen.type,
                 onPickType = { t -> push(Screen.AddPlaylist(t)) },
                 onFinished = { stack.clear(); stack.add(Screen.Home) },
+                onCancel = { pop() },
             )
             is Screen.Settings -> {
                 // TiviMate: Settings slides in from the right over the screen you came from.
