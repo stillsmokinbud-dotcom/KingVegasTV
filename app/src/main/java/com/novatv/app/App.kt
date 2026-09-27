@@ -41,6 +41,8 @@ class App : Application() {
     /** Channel last watched in the player (the guide marks it with ▶). */
     @Volatile var lastPlayedId: String? = null
     @Volatile var guideHintsShown: Boolean = false
+    /** Channel groups the guide showed last (shown instantly when the guide opens again). */
+    @Volatile var guideGroups: List<com.novatv.app.playlist.ChannelGroup> = emptyList()
     /** Latest settings, for code outside Compose. */
     @Volatile var lastSettings: com.novatv.app.settings.AppSettings? = null
     /** Set by the player to open the TV guide with the groups list showing. */
