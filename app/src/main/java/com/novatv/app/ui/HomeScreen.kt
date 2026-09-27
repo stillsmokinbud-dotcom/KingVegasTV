@@ -164,7 +164,6 @@ fun GuideScreen(
     // Guide cursor
     var groupIndex by remember { mutableIntStateOf(0) }
     var row by remember { mutableIntStateOf(0) }
-    var top by remember { mutableIntStateOf(0) }
     var onChannelCol by remember { mutableStateOf(false) }
     var focusTime by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var windowStart by remember { mutableLongStateOf(System.currentTimeMillis() / HALF_HOUR * HALF_HOUR) }
@@ -191,7 +190,7 @@ fun GuideScreen(
             val last = settings.str(DataKeys.LAST_GROUP)
             val pick = groups.indexOfFirst { it.name == last && it.channels.isNotEmpty() }.takeIf { it >= 0 }
                 ?: groups.indexOfFirst { it.channels.isNotEmpty() }.takeIf { it >= 0 } ?: 0
-            if (pick != groupIndex) { groupIndex = pick; row = 0; top = 0 }
+            if (pick != groupIndex) { groupIndex = pick; row = 0 }
             // TiviMate: coming back from full screen, the guide opens on the channel you were watching.
             if (!groupChosen) {
                 val at = groups[pick].channels.indexOfFirst { it.id == app.lastPlayedId }
@@ -207,7 +206,7 @@ fun GuideScreen(
     val windowMs = settings.int("epg.timeline_hours").coerceAtLeast(1) * HOUR + 15 * 60_000L
     if (row > chs.lastIndex) row = chs.lastIndex.coerceAtLeast(0)
     // TiviMate: the highlighted row stays in the middle while the list scrolls under it.
-    top = (row - rows / 2).coerceIn(0, (chs.size - rows).coerceAtLeast(0))
+    val top = (row - rows / 2).coerceIn(0, (chs.size - rows).coerceAtLeast(0))
     val channel = chs.getOrNull(row)
     // TiviMate: the preview keeps playing what you were watching; moving through the guide
     // doesn't switch it. Before anything was played it follows the highlighted channel.
@@ -308,7 +307,8 @@ fun GuideScreen(
     }
 
     var lastBackInMenu by remember { mutableStateOf(0L) }
-    var lastInput by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    // Last key press time; a plain holder (not state) so key presses don't cause extra redraws.
+    val lastInput = remember { longArrayOf(System.currentTimeMillis()) }
     fun guideBack() {
         // Empty start screen (no playlist yet): like TiviMate there is no side menu; Back twice exits.
         if (playlists?.isEmpty() == true) {
@@ -423,7 +423,7 @@ fun GuideScreen(
 
     // Back, like TiviMate: guide scrolled away -> back to "now" (if enabled), otherwise open the menu;
     // Back in the menu twice -> exit the app.
-    BackHandler(enabled = !background) { lastInput = System.currentTimeMillis(); guideBack() }
+    BackHandler(enabled = !background) { lastInput[0] = System.currentTimeMillis(); guideBack() }
 
     // Preview › Autoplay channels: the preview follows the highlighted channel as you move.
     val autoplay = settings.bool("epg.show_preview") && settings.bool("guide.preview_autoplay")
@@ -435,12 +435,13 @@ fun GuideScreen(
     }
     // Preview › Full screen switching timeout: after this long without a key press the
     // channel in the preview goes full screen.
-    LaunchedEffect(lastInput, playingChannel, drawerOpen, background, menuFor, programFor, pinFor, info, paywall) {
+    LaunchedEffect(playingChannel, drawerOpen, background, menuFor, programFor, pinFor, info, paywall) {
         val secs = settings.str("guide.preview_timeout").toIntOrNull() ?: 0
         val ch = playingChannel ?: return@LaunchedEffect
         if (secs <= 0 || background || drawerOpen || !settings.bool("epg.show_preview")) return@LaunchedEffect
         if (menuFor != null || programFor != null || pinFor != null || info != null || paywall != null) return@LaunchedEffect
-        delay(secs * 1000L)
+        lastInput[0] = System.currentTimeMillis()
+        while (System.currentTimeMillis() - lastInput[0] < secs * 1000L) delay(1000)
         onPlay(app.playQueue.ifEmpty { channels }, ch)
     }
 
@@ -451,7 +452,7 @@ fun GuideScreen(
             .background(colors.background)
             .focusRequester(rootFocus)
             .onKeyEvent { e ->
-                lastInput = System.currentTimeMillis()
+                lastInput[0] = System.currentTimeMillis()
                 if (drawerOpen) return@onKeyEvent false
                 // Welcome screen: only the two buttons; no side menu (Left/Menu/arrows do nothing here).
                 if (playlists?.isEmpty() == true) return@onKeyEvent e.key != Key.Back
@@ -526,7 +527,7 @@ fun GuideScreen(
             SideDrawer(
                 groups = groups, groupIndex = groupIndex,
                 onGroup = { i ->
-                    groupIndex = i; row = 0; top = 0; resetToNow(); drawerOpen = false
+                    groupIndex = i; row = 0; resetToNow(); drawerOpen = false
                     groups.getOrNull(i)?.let { g -> scope.launch { app.settings.set(DataKeys.LAST_GROUP, g.name) } }
                 },
                 onMenu = { d -> drawerOpen = false; if (d != MenuDest.GUIDE) onNavigate(d) },
@@ -790,107 +791,48 @@ private fun GuideGrid(
 ) {
     val context = LocalContext.current
     val colors = MaterialTheme.colorScheme
-    val muted = colors.onBackground.copy(alpha = 0.6f)
     val windowEnd = windowStart + windowMs
     val chs = group.channels
-    val showNums = settings.bool("channels.show_numbers")
+    val density = androidx.compose.ui.platform.LocalDensity.current
+
+    // Smooth scrolling (TiviMate "Animated channels scrolling"): the list glides to the new position
+    // instead of jumping. The animation only moves the rows (layout phase), nothing is rebuilt per frame.
+    val scroll = remember(group.name) { androidx.compose.animation.core.Animatable(top.toFloat()) }
+    val animated = settings.bool("guide.animated_scroll")
+    LaunchedEffect(top, group.name) {
+        if (animated && kotlin.math.abs(scroll.value - top) <= rows) {
+            scroll.animateTo(top.toFloat(), androidx.compose.animation.core.tween(140, easing = androidx.compose.animation.core.LinearOutSlowInEasing))
+        } else scroll.snapTo(top.toFloat())
+    }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val progWidth = maxWidth - CHANNEL_COL - 6.dp
         val headerH = 34.dp
         val rowH = (maxHeight - headerH) / rows
+        val rowHpx = with(density) { rowH.toPx() }
         fun xOf(t: Long): Dp = progWidth * ((t.coerceIn(windowStart, windowEnd) - windowStart).toFloat() / windowMs)
 
         Column(Modifier.fillMaxSize()) {
-            // Timeline header
-            Row(Modifier.fillMaxWidth().height(headerH)) {
-                Text(dateTimeText(now, settings, context), fontSize = 14.sp, fontWeight = FontWeight.Medium,
-                    color = colors.primary, maxLines = 1,
-                    overflow = TextOverflow.Ellipsis, modifier = Modifier.width(CHANNEL_COL).padding(start = 24.dp, top = 8.dp))
-                Box(Modifier.width(progWidth).fillMaxHeight()) {
-                    val dayOf = { ts: Long -> java.util.Calendar.getInstance().apply { timeInMillis = ts }.get(java.util.Calendar.DAY_OF_YEAR) }
-                    var t = windowStart
-                    while (t < windowEnd) {
-                        val label = if (dayOf(t) != dayOf(now)) dateTimeText(t, settings, context) else timeText(t, settings, context)
-                        Text(label, fontSize = 14.sp, maxLines = 1, color = colors.onBackground.copy(alpha = 0.85f),
-                            modifier = Modifier.offset(x = xOf(t)).padding(start = 6.dp, top = 8.dp))
-                        t += HALF_HOUR
-                    }
-                }
-            }
+            GuideTimeline(settings, now, windowStart, windowEnd, progWidth, headerH, ::xOf)
             Box(Modifier.padding(start = CHANNEL_COL).fillMaxWidth().height(1.dp).background(colors.onBackground.copy(alpha = 0.25f)))
-            // Rows
-            for (i in top until minOf(chs.size, top + rows)) {
-                val c = chs[i]
-                val isRow = i == row
-                Row(Modifier.fillMaxWidth().height(rowH)) {
-                    val chanFocused = isRow && onChannelCol
-                    Row(
-                        Modifier
-                            .width(CHANNEL_COL)
-                            .fillMaxHeight()
-                            .padding(start = 12.dp, end = 4.dp, top = 2.dp, bottom = 2.dp)
-                            .clip(RoundedCornerShape(4.dp))
-                            .background(if (chanFocused) (if (LocalSelectionWhite.current) Color.White else colors.primary)
-                                else Color.Transparent)
-                            .pointerInput(i) { detectTapGestures(onTap = { onTapChannel(i) }, onLongPress = { onLongChannel(i) }) }
-                            .padding(horizontal = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        // TiviMate: the highlighted row's channel name turns the accent color (no box around it).
-                        val fg = if (chanFocused && LocalSelectionWhite.current) Color(0xFF16181C) else if (chanFocused) Color.White
-                            else if (isRow && settings.bool("guide.highlight_current_channel")) colors.primary else colors.onBackground
-                        if (showNums) Text("${c.number ?: ""}", fontSize = 14.sp, color = fg.copy(alpha = 0.85f), modifier = Modifier.width(38.dp))
-                        ChannelLogo(settings, c, 40.dp)
-                        if (settings.bool("guide.show_names")) {
-                            Text(c.name, fontSize = 15.sp, color = fg, maxLines = if (settings.bool("guide.two_line_names")) 2 else 1,
-                                overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                        } else Spacer(Modifier.weight(1f))
-                        if (c.id in favorites) Text("★", fontSize = 12.sp, color = Color(0xFFFFC107))
-                        // TiviMate marks the channel you were last watching with a small play arrow.
-                        if (c.catchupDays > 0 && settings.bool("channels.catchup_icon"))
-                            androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Filled.History, contentDescription = "Catch-up",
-                                tint = fg.copy(alpha = 0.7f), modifier = Modifier.size(16.dp))
-                        if (c.id == playingId) Text("▶", fontSize = 12.sp, color = if (chanFocused) fg else colors.primary)
-                    }
-                    Box(Modifier.width(progWidth).fillMaxHeight()) {
-                        for (cell in epg.cells(c, windowStart, windowEnd)) {
-                            val focused = isRow && !onChannelCol && cell.start <= focusTime && cell.end > focusTime
-                            val cellBase = colors.onBackground.copy(alpha = 0.10f)
-                            val bg = when {
-                                focused -> if (LocalSelectionWhite.current) Color.White else colors.primary
-                                else -> cellBase
-                            }
-                            val w = xOf(cell.end) - xOf(cell.start)
-                            val fg = when {
-                                focused -> if (LocalSelectionWhite.current) Color(0xFF16181C) else Color.White
-                                cell.program == null -> colors.onBackground.copy(alpha = 0.6f)
-                                else -> colors.onBackground.copy(alpha = 0.92f)
-                            }
-                            val airing = cell.start <= now && cell.end > now
-                            Box(
-                                Modifier
-                                    .offset(x = xOf(cell.start))
-                                    .width(w)
-                                    .fillMaxHeight()
-                                    .padding(top = 2.dp, bottom = 2.dp, end = 2.dp)
-                                    .clip(RoundedCornerShape(2.dp))
-                                    .background(bg)
-                                    .pointerInput(i, cell.start) { detectTapGestures(onTap = { onTapCell(i, cell) }, onLongPress = { onLongChannel(i) }) },
-                                contentAlignment = Alignment.CenterStart,
-                            ) {
-                                // "Highlight current programs": the part already aired is a shade lighter (no lines).
-                                if (!focused && airing && settings.bool("guide.highlight_current_programs")) {
-                                    Box(Modifier.fillMaxHeight()
-                                        .fillMaxWidth(((now - cell.start).toFloat() / (cell.end - cell.start)).coerceIn(0f, 1f))
-                                        .background(Color.White.copy(alpha = 0.06f)))
-                                }
-                                if (w > 44.dp) {
-                                    Text(cell.title, fontSize = 14.sp, color = fg, modifier = Modifier.padding(horizontal = 10.dp),
-                                        maxLines = if (settings.bool("guide.two_line_titles")) 2 else 1, overflow = TextOverflow.Ellipsis)
-                                }
-                            }
+            // Rows: one extra above and below so nothing pops in while the list glides.
+            Box(Modifier.fillMaxWidth().weight(1f).clipToBounds()) {
+                val from = (minOf(top, scroll.targetValue.toInt()) - 1).coerceAtLeast(0)
+                val to = minOf(chs.size, maxOf(top, scroll.targetValue.toInt()) + rows + 1)
+                for (i in from until to) {
+                    val c = chs[i]
+                    androidx.compose.runtime.key(c.id) {
+                        val isRow = i == row
+                        Box(Modifier.fillMaxWidth().height(rowH)
+                            .offset { androidx.compose.ui.unit.IntOffset(0, ((i - scroll.value) * rowHpx).toInt()) }) {
+                            GuideRowItem(
+                                settings = settings, c = c, index = i, epg = epg, now = now,
+                                windowStart = windowStart, windowEnd = windowEnd, progWidth = progWidth,
+                                isRow = isRow, chanFocused = isRow && onChannelCol,
+                                focusTime = if (isRow && !onChannelCol) focusTime else -1L,
+                                playing = c.id == playingId, favorite = c.id in favorites,
+                                onTapChannel = onTapChannel, onTapCell = onTapCell, onLongChannel = onLongChannel,
+                            )
                         }
                     }
                 }
@@ -903,6 +845,112 @@ private fun GuideGrid(
                 .background(colors.primary))
             Box(Modifier.offset(x = CHANNEL_COL + xOf(now), y = headerH).width(1.dp)
                 .then(if (full) Modifier.fillMaxHeight() else Modifier.height(8.dp)).background(colors.primary))
+        }
+    }
+}
+
+/** Date/time on the left (accent color) and half-hour marks; marks on another day carry the date. */
+@Composable
+private fun GuideTimeline(settings: AppSettings, now: Long, windowStart: Long, windowEnd: Long, progWidth: Dp, headerH: Dp, xOf: (Long) -> Dp) {
+    val context = LocalContext.current
+    val colors = MaterialTheme.colorScheme
+    Row(Modifier.fillMaxWidth().height(headerH)) {
+        Text(dateTimeText(now, settings, context), fontSize = 14.sp, fontWeight = FontWeight.Medium,
+            color = colors.primary, maxLines = 1,
+            overflow = TextOverflow.Ellipsis, modifier = Modifier.width(CHANNEL_COL).padding(start = 24.dp, top = 8.dp))
+        Box(Modifier.width(progWidth).fillMaxHeight()) {
+            val dayOf = { ts: Long -> java.util.Calendar.getInstance().apply { timeInMillis = ts }.get(java.util.Calendar.DAY_OF_YEAR) }
+            var t = windowStart
+            while (t < windowEnd) {
+                val label = if (dayOf(t) != dayOf(now)) dateTimeText(t, settings, context) else timeText(t, settings, context)
+                Text(label, fontSize = 14.sp, maxLines = 1, color = colors.onBackground.copy(alpha = 0.85f),
+                    modifier = Modifier.offset(x = xOf(t)).padding(start = 6.dp, top = 8.dp))
+                t += HALF_HOUR
+            }
+        }
+    }
+}
+
+/**
+ * One guide row. Its inputs only change when this row is (or stops being) the highlighted one,
+ * so moving through the guide redraws two rows, not the whole grid.
+ */
+@Composable
+private fun GuideRowItem(
+    settings: AppSettings, c: Channel, index: Int, epg: EpgData, now: Long,
+    windowStart: Long, windowEnd: Long, progWidth: Dp,
+    isRow: Boolean, chanFocused: Boolean, focusTime: Long, playing: Boolean, favorite: Boolean,
+    onTapChannel: (Int) -> Unit, onTapCell: (Int, GuideCell) -> Unit, onLongChannel: (Int) -> Unit,
+) {
+    val colors = MaterialTheme.colorScheme
+    val white = LocalSelectionWhite.current
+    val cells = remember(c.id, epg, windowStart, windowEnd) { epg.cells(c, windowStart, windowEnd) }
+    val span = (windowEnd - windowStart).toFloat()
+    fun xOf(t: Long): Dp = progWidth * ((t.coerceIn(windowStart, windowEnd) - windowStart).toFloat() / span)
+    Row(Modifier.fillMaxSize()) {
+        Row(
+            Modifier
+                .width(CHANNEL_COL)
+                .fillMaxHeight()
+                .padding(start = 12.dp, end = 4.dp, top = 2.dp, bottom = 2.dp)
+                .clip(RoundedCornerShape(4.dp))
+                .background(if (chanFocused) (if (white) Color.White else colors.primary) else Color.Transparent)
+                .pointerInput(index) { detectTapGestures(onTap = { onTapChannel(index) }, onLongPress = { onLongChannel(index) }) }
+                .padding(horizontal = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            // TiviMate: the highlighted row's channel name turns the accent color (no box around it).
+            val fg = if (chanFocused && white) Color(0xFF16181C) else if (chanFocused) Color.White
+                else if (isRow && settings.bool("guide.highlight_current_channel")) colors.primary else colors.onBackground
+            if (settings.bool("channels.show_numbers")) Text("${c.number ?: ""}", fontSize = 14.sp, color = fg.copy(alpha = 0.85f), modifier = Modifier.width(38.dp))
+            ChannelLogo(settings, c, 40.dp)
+            if (settings.bool("guide.show_names")) {
+                Text(c.name, fontSize = 15.sp, color = fg, maxLines = if (settings.bool("guide.two_line_names")) 2 else 1,
+                    overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            } else Spacer(Modifier.weight(1f))
+            if (favorite) Text("★", fontSize = 12.sp, color = Color(0xFFFFC107))
+            if (c.catchupDays > 0 && settings.bool("channels.catchup_icon"))
+                androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Filled.History, contentDescription = "Catch-up",
+                    tint = fg.copy(alpha = 0.7f), modifier = Modifier.size(16.dp))
+            if (playing) Text("▶", fontSize = 12.sp, color = if (chanFocused) fg else colors.primary)
+        }
+        Box(Modifier.width(progWidth).fillMaxHeight()) {
+            val twoLines = settings.bool("guide.two_line_titles")
+            val highlightNow = settings.bool("guide.highlight_current_programs")
+            for (cell in cells) {
+                val focused = focusTime >= 0 && cell.start <= focusTime && cell.end > focusTime
+                val w = xOf(cell.end) - xOf(cell.start)
+                val bg = if (focused) (if (white) Color.White else colors.primary) else colors.onBackground.copy(alpha = 0.10f)
+                val fg = when {
+                    focused -> if (white) Color(0xFF16181C) else Color.White
+                    cell.program == null -> colors.onBackground.copy(alpha = 0.6f)
+                    else -> colors.onBackground.copy(alpha = 0.92f)
+                }
+                val airing = cell.start <= now && cell.end > now
+                Box(
+                    Modifier
+                        .offset(x = xOf(cell.start))
+                        .width(w)
+                        .fillMaxHeight()
+                        .padding(top = 2.dp, bottom = 2.dp, end = 2.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(bg)
+                        .pointerInput(index, cell.start) { detectTapGestures(onTap = { onTapCell(index, cell) }, onLongPress = { onLongChannel(index) }) },
+                    contentAlignment = Alignment.CenterStart,
+                ) {
+                    // "Highlight current programs": the part already aired is a shade lighter.
+                    if (!focused && airing && highlightNow) {
+                        Box(Modifier.fillMaxHeight()
+                            .fillMaxWidth(((now - cell.start).toFloat() / (cell.end - cell.start)).coerceIn(0f, 1f))
+                            .background(Color.White.copy(alpha = 0.06f)))
+                    }
+                    if (w > 44.dp) {
+                        Text(cell.title, fontSize = 14.sp, color = fg, modifier = Modifier.padding(horizontal = 10.dp),
+                            maxLines = if (twoLines) 2 else 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+            }
         }
     }
 }
