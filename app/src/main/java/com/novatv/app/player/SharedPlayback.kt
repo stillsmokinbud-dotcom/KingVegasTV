@@ -37,8 +37,30 @@ class SharedPlayback(private val context: Context, private val http: OkHttpClien
     /** Called on the main thread whenever [reconnecting] changes. */
     var onReconnectChanged: ((Boolean) -> Unit)? = null
 
-    fun obtain(settings: AppSettings): PlayerFactory.Built =
-        built ?: PlayerFactory(context, http).create(settings, DEFAULT_USER_AGENT).also { built = it; Guard(it.player).start() }
+    private var builtWith: String? = null
+    private var guard: Guard? = null
+
+    /**
+     * The shared live player. If a Playback setting it's built with changed (buffer size, decoder,
+     * passthrough, tunneling, surround, timeout…), a new one is made so the change takes effect
+     * straight away instead of after restarting the app.
+     */
+    fun obtain(settings: AppSettings): PlayerFactory.Built {
+        val sig = PlayerFactory.signature(settings)
+        built?.let { old ->
+            if (builtWith == sig) return old
+            guard?.stop(); guard = null
+            main.removeCallbacks(pauseIfUnused)
+            PlayerFactory.forget(old.player)
+            runCatching { old.player.release() }
+            built = null; channelId = null
+        }
+        builtWith = sig
+        return PlayerFactory(context, http).create(settings, DEFAULT_USER_AGENT).also { b ->
+            built = b
+            guard = Guard(b.player).also { it.start() }
+        }
+    }
 
     fun attach() { users++; main.removeCallbacks(pauseIfUnused) }
 
@@ -55,7 +77,7 @@ class SharedPlayback(private val context: Context, private val http: OkHttpClien
         return channelId == id && p.playbackState != Player.STATE_IDLE && p.playbackState != Player.STATE_ENDED
     }
 
-    fun markLoaded(id: String) { channelId = id; reconnectAttempts = 0; setReconnecting(false) }
+    fun markLoaded(id: String) { channelId = id; reconnectAttempts = 0; guard?.cancelPending(); setReconnecting(false) }
 
     private var reconnectAttempts = 0
 
@@ -80,24 +102,43 @@ class SharedPlayback(private val context: Context, private val http: OkHttpClien
         private var lastPos = -1L
         private var playingFor = 0
 
+        private var pending: Runnable? = null
+        @Volatile private var stopped = false
+
         fun start() {
             p.addListener(this)
             main.postDelayed(tick, 1000)
         }
+
+        fun stop() {
+            stopped = true
+            p.removeListener(this)
+            main.removeCallbacks(tick)
+            pending?.let { main.removeCallbacks(it) }
+            pending = null
+        }
+
+        /** A new channel started (or the user paused/stopped): forget any reconnect still waiting. */
+        fun cancelPending() { pending?.let { main.removeCallbacks(it) }; pending = null }
 
         private fun reset() { bufferingFor = 0; stuckFor = 0; lastFrames = -1; lastPos = -1L }
 
         private fun reconnect(delayMs: Long) {
             reset()
             setReconnecting(true)
-            main.postDelayed({
-                if (channelId == null) return@postDelayed
+            cancelPending()
+            val r = Runnable {
+                pending = null
+                // Not if the user paused / stopped meanwhile, or the player was replaced.
+                if (stopped || channelId == null || !p.playWhenReady) { setReconnecting(false); return@Runnable }
                 runCatching {
                     p.seekToDefaultPosition()
                     p.prepare()
                     p.playWhenReady = true
                 }
-            }, delayMs)
+            }
+            pending = r
+            main.postDelayed(r, delayMs)
         }
 
         private fun backoff(): Long {
@@ -121,6 +162,7 @@ class SharedPlayback(private val context: Context, private val http: OkHttpClien
 
         private val tick: Runnable = object : Runnable {
             override fun run() {
+                if (stopped) return
                 try { check() } finally { main.postDelayed(this, 1000) }
             }
         }
