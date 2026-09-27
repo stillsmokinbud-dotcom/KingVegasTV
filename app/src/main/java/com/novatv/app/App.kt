@@ -43,6 +43,11 @@ class App : Application() {
     @Volatile var guideHintsShown: Boolean = false
     /** Channel groups the guide showed last (shown instantly when the guide opens again). */
     @Volatile var guideGroups: List<com.novatv.app.playlist.ChannelGroup> = emptyList()
+    /** Where the guide was (group and channel row), so it reopens exactly there with no blank frame. */
+    @Volatile var guideGroupIndex: Int = -1
+    @Volatile var guideRow: Int = 0
+    /** The guide's menu item that opened the current screen (the guide reopens with the menu on it). */
+    @Volatile var guideMenuReturn: com.novatv.app.ui.MenuDest? = null
     /** Latest settings, for code outside Compose. */
     @Volatile var lastSettings: com.novatv.app.settings.AppSettings? = null
     /** Set by the player to open the TV guide with the groups list showing. */
@@ -69,6 +74,11 @@ class App : Application() {
                 com.novatv.app.settings.RemoteKeys.GUIDE_KEYS.forEach { settings.set(com.novatv.app.settings.RemoteKeys.guideKey(it.id), it.default) }
                 com.novatv.app.settings.RemoteKeys.PLAYER_KEYS.forEach { settings.set(com.novatv.app.settings.RemoteKeys.playerKey(it.id), it.default) }
                 settings.set("data.remote_reset_v1", "done")
+            }
+            // One time: the channel info panel shows at the bottom (like TiviMate) for everyone.
+            if (settings.current().str("data.info_bottom_v1") != "done") {
+                settings.set("player.info_bottom", "true")
+                settings.set("data.info_bottom_v1", "done")
             }
         }
         // Settings → TV guide → "Update when a playlist is updated"
