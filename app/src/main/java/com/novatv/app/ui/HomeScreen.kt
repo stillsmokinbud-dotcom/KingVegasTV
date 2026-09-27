@@ -43,6 +43,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.draw.drawBehind
@@ -991,8 +993,11 @@ private fun GuideRowItem(
             if (settings.bool("channels.show_numbers")) Text("${c.number ?: ""}", fontSize = 14.sp, color = fg.copy(alpha = 0.85f), modifier = Modifier.width(38.dp))
             ChannelLogo(settings, c, 52.dp)
             if (settings.bool("guide.show_names")) {
-                Text(c.name, fontSize = 15.sp, color = fg, maxLines = if (settings.bool("guide.two_line_names")) 2 else 1,
-                    overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                // TiviMate: the highlighted channel's name scrolls sideways when it doesn't fit.
+                val two = settings.bool("guide.two_line_names")
+                Text(c.name, fontSize = 15.sp, color = fg, maxLines = if (two) 2 else 1,
+                    overflow = if (isRow && !two) TextOverflow.Clip else TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f).then(if (isRow && !two) Modifier.marqueeWhenFocused() else Modifier))
             } else Spacer(Modifier.weight(1f))
             if (favorite) Text("★", fontSize = 12.sp, color = Color(0xFFFFC107))
             if (c.catchupDays > 0 && settings.bool("channels.catchup_icon"))
@@ -1035,8 +1040,10 @@ private fun GuideRowItem(
                             .background(Color.White.copy(alpha = 0.06f)))
                     }
                     if (w > 44.dp) {
-                        Text(cell.title, fontSize = 14.sp, color = fg, modifier = Modifier.padding(horizontal = 10.dp),
-                            maxLines = if (twoLines) 2 else 1, overflow = TextOverflow.Ellipsis)
+                        // The selected program's title scrolls sideways when it's cut off (TiviMate).
+                        Text(cell.title, fontSize = 14.sp, color = fg,
+                            modifier = Modifier.padding(horizontal = 10.dp).then(if (focused && !twoLines) Modifier.marqueeWhenFocused() else Modifier),
+                            maxLines = if (twoLines) 2 else 1, overflow = if (focused && !twoLines) TextOverflow.Clip else TextOverflow.Ellipsis)
                     }
                 }
             }
@@ -1310,26 +1317,39 @@ fun SearchScreen(
         }
     }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(32.dp)) {
-        ScreenHeader("Search", "Live channels, TV programs, movies and TV shows")
+        // TiviMate's search: round microphone button, the search box, and the history as chips below.
         val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
         val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
+            RoundMicButton { startVoice() }
+            Spacer(Modifier.width(20.dp))
             OutlinedTextField(value = query, onValueChange = { query = it }, singleLine = true,
-                placeholder = { Text("Type at least 2 letters") }, modifier = Modifier.width(560.dp).focusRequester(fr),
+                placeholder = { Text("Speak or type to search") }, modifier = Modifier.width(620.dp).focusRequester(fr),
+                shape = RoundedCornerShape(6.dp),
                 // The keyboard's Search / Enter key closes the keyboard and moves down onto the results.
                 keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search),
                 keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = {
                     keyboard?.hide(); saveTerm(q)
                     focusManager.moveFocus(androidx.compose.ui.focus.FocusDirection.Down)
                 }, onDone = { keyboard?.hide(); focusManager.moveFocus(androidx.compose.ui.focus.FocusDirection.Down) }))
-            Spacer(Modifier.width(12.dp))
-            TvRow(modifier = Modifier.width(150.dp), onClick = { startVoice() }) { RowTitle("🎤 Voice") }
         }
         Spacer(Modifier.height(12.dp))
         LazyColumn {
             // Other › Search › "Show search history"
-            if (q.isEmpty() && settings.bool("search.history")) {
-                itemsIndexed(history) { _, h -> TvRow(onClick = { query = h }) { RowTitle("🕘  $h") } }
+            if (q.isEmpty() && settings.bool("search.history") && history.isNotEmpty()) {
+                item {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.width(700.dp).padding(start = 76.dp, top = 12.dp, bottom = 6.dp)) {
+                        Text("Search history", fontSize = 13.sp, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.75f), modifier = Modifier.weight(1f))
+                        // Clear the history (trash can, like TiviMate)
+                        SearchChip("🗑") { scope.launch { app.settings.setList(DataKeys.SEARCH_HISTORY, emptyList()) } }
+                    }
+                }
+                items(history.chunked(2).size) { i ->
+                    val pair = history.chunked(2)[i]
+                    Row(Modifier.padding(start = 76.dp)) {
+                        pair.forEach { h -> Box(Modifier.width(300.dp)) { SearchChip(h) { query = h } } }
+                    }
+                }
             }
             if (q.length >= 2 && chResults.isEmpty() && progResults.isEmpty() && vodResults.first.isEmpty() && vodResults.second.isEmpty()) {
                 item { Text("Nothing found for \"$q\"", fontSize = 15.sp, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
@@ -1375,11 +1395,47 @@ fun SearchScreen(
     AutoFocus(fr)
 }
 
+/** Round white microphone button (TiviMate search). */
+@Composable
+private fun RoundMicButton(onClick: () -> Unit) {
+    var f by remember { mutableStateOf(false) }
+    Box(
+        Modifier.size(56.dp).onFocusChanged { f = it.isFocused }.clip(RoundedCornerShape(50))
+            .background(if (f) Color.White else Color.White.copy(alpha = 0.85f))
+            .clickable { onClick() },
+        contentAlignment = Alignment.Center,
+    ) {
+        androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Filled.Mic, "Voice search",
+            tint = Color(0xFF3A3E47), modifier = Modifier.size(26.dp))
+    }
+}
+
+/** A search-history chip: small rounded pill, white when selected. */
+@Composable
+private fun SearchChip(text: String, onClick: () -> Unit) {
+    var f by remember { mutableStateOf(false) }
+    Text(text, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+        color = if (f) Color(0xFF16181C) else MaterialTheme.colorScheme.onBackground,
+        modifier = Modifier.padding(4.dp).onFocusChanged { f = it.isFocused }.clip(RoundedCornerShape(50))
+            .background(if (f) Color.White else Color.White.copy(alpha = 0.12f))
+            .clickable { onClick() }
+            .padding(horizontal = 14.dp, vertical = 6.dp))
+}
+
 @Composable
 private fun SearchHeader(title: String) {
     Text(title, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary,
         modifier = Modifier.padding(start = 12.dp, top = 14.dp, bottom = 4.dp))
 }
+
+/** Text that doesn't fit slides slowly sideways after a short pause, then repeats (like TiviMate). */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+fun Modifier.marqueeWhenFocused(): Modifier = this.basicMarquee(
+    iterations = Int.MAX_VALUE,
+    initialDelayMillis = 1200,
+    repeatDelayMillis = 1500,
+    velocity = 40.dp,
+)
 
 /** Simple full-screen message used for sections that aren't built yet. */
 @Composable
