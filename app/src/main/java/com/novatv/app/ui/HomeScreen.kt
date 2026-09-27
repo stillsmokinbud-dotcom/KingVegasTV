@@ -181,7 +181,14 @@ fun GuideScreen(
     // is the real guide — not an empty group with a grey "No channels" screen for an instant.
     val restored = remember {
         val gs = app.guideGroups
-        val gi = app.guideGroupIndex.takeIf { it in gs.indices && gs[it].channels.isNotEmpty() }
+        // TiviMate: back from full screen, the guide is on the channel you're watching (in its group),
+        // not wherever you were browsing before. Back from Settings / Movies (menu) it stays as it was.
+        val pid = app.lastPlayedId
+        val backToPlaying = !background && app.guideMenuReturn == null && pid != null
+        val playGroup = if (!backToPlaying) null else
+            app.playGroupIndex.takeIf { it in gs.indices && gs[it].channels.any { c -> c.id == pid } }
+                ?: gs.indexOfFirst { g -> g.channels.any { it.id == pid } }.takeIf { it >= 0 }
+        val gi = playGroup ?: app.guideGroupIndex.takeIf { it in gs.indices && gs[it].channels.isNotEmpty() }
         if (gi == null) null else {
             val at = gs[gi].channels.indexOfFirst { it.id == app.lastPlayedId }
             gi to (if (at >= 0) at else app.guideRow.coerceIn(0, gs[gi].channels.lastIndex))
@@ -270,6 +277,7 @@ fun GuideScreen(
                 app.playQueue = g.channels
             } else onPlay(g.channels, c)
         }
+        app.playGroupIndex = groupIndex
         if (g.locked && g.name !in unlocked.value) pinFor = { unlocked.value = unlocked.value + g.name; go() } else go()
     }
 
@@ -615,6 +623,15 @@ fun GuideScreen(
         ) {
             SideDrawer(
                 groups = groups, groupIndex = groupIndex,
+                // TiviMate: just moving over a group shows it in the guide straight away.
+                onHoverGroup = { i ->
+                    if (i != groupIndex) {
+                        groupIndex = i
+                        val at = groups.getOrNull(i)?.channels?.indexOfFirst { it.id == playingId } ?: -1
+                        row = if (at >= 0) at else 0
+                        resetToNow()
+                    }
+                },
                 onGroup = { i ->
                     groupIndex = i; row = 0; resetToNow(); drawerOpen = false
                     groups.getOrNull(i)?.let { g -> scope.launch { app.settings.set(DataKeys.LAST_GROUP, g.name) } }
@@ -1079,6 +1096,7 @@ private fun SideDrawer(
     railFocusRequest: Int = 0,
     onOpenRail: () -> Unit = {},
     onCloseRail: () -> Unit = {},
+    onHoverGroup: (Int) -> Unit = {},
 ) {
     val context = LocalContext.current
     val groupFocus = remember { FocusRequester() }
@@ -1196,7 +1214,7 @@ private fun SideDrawer(
                         TvRow(
                             modifier = (if (i == groupIndex) Modifier.focusRequester(groupFocus) else Modifier)
                                 .then(if (i == jumpTo) Modifier.focusRequester(jumpFocus) else Modifier),
-                            onFocused = { focusedGroup = i },
+                            onFocused = { focusedGroup = i; if (!passive) onHoverGroup(i) },
                             selected = i == groupIndex,
                             onClick = { onGroup(i) },
                         ) {
