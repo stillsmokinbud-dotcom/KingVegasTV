@@ -691,7 +691,7 @@ object SettingsSchema {
         ChoiceItem("channels.numbering", "Channel numbers",
             opts("playlist" to "From playlist", "sequential" to "Sequential", "per_group" to "Per group"), "playlist"),
         ToggleItem("channels.show_hidden", "Show hidden channels", false),
-        ToggleItem("general.recent_group", "Show recently watched", true),
+        ToggleItem("general.recent_group", "Show recently watched", false),
         ChoiceItem("general.clock", "Time format", opts("system" to "System", "12" to "12-hour", "24" to "24-hour"), "system"),
         ChoiceItem("general.search_scope", "Search in", opts("all" to "All", "channels" to "Channels"), "all"),
         NumberItem("playback.timeout", "Connection timeout", 5, 60, 5, 15, " s"),
