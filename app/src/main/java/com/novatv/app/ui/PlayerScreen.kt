@@ -482,7 +482,8 @@ fun PlayerScreen(
             val buttons = order.filter { settings.bool("player.btn.$it") }.map { id ->
                 id to (labels[id] ?: PLAYER_MENU_BUTTONS.first { it.first == id }.second)
             }
-            PlayerMenuRow(buttons, ::menuButtonIcon, onDismiss = { overlay = Overlay.NONE }) { id ->
+            PlayerMenuRow(buttons, ::menuButtonIcon, header = channel.group to dateTimeText(System.currentTimeMillis(), settings, context),
+                onDismiss = { overlay = Overlay.NONE }) { id ->
                 overlay = Overlay.NONE
                 action(when (id) { "channels" -> "channels_overlay"; else -> id })
             }
