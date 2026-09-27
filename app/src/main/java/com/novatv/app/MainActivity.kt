@@ -76,6 +76,22 @@ class MainActivity : ComponentActivity() {
         ) runCatching { enterPictureInPictureMode(android.app.PictureInPictureParams.Builder().build()) }
     }
 
+    private val systemLocale: java.util.Locale = java.util.Locale.getDefault()
+
+    @Suppress("DEPRECATION")
+    private fun applyLanguage(code: String) {
+        val locale = when {
+            code == "system" || code.isBlank() -> systemLocale
+            code.contains('_') -> java.util.Locale(code.substringBefore('_'), code.substringAfter('_').uppercase())
+            else -> java.util.Locale(code)
+        }
+        java.util.Locale.setDefault(locale)
+        runCatching {
+            val cfg = android.content.res.Configuration(resources.configuration).apply { setLocale(locale) }
+            resources.updateConfiguration(cfg, resources.displayMetrics)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
@@ -85,6 +101,9 @@ class MainActivity : ComponentActivity() {
                 Box(Modifier.fillMaxSize().background(Color.Black))
             } else {
                 app.lastSettings = s
+                // Appearance › Language: dates, times and number formats follow the chosen language.
+                val lang = s.str("general.language")
+                androidx.compose.runtime.remember(lang) { applyLanguage(lang) }
                 AppTheme(s) { AppRoot(s, onFinish = { finish() }) }
             }
         }
@@ -165,12 +184,25 @@ private fun AppRoot(settings: AppSettings, onFinish: () -> Unit) {
     }
 
     // Recordings start on time and reminders pop up while the app is open.
+    // Appearance › Logos › Logos folder: needs permission to read pictures on the device.
+    val logosFolder = settings.str("logos.folder").trim()
+    LaunchedEffect(logosFolder) {
+        if (logosFolder.isEmpty()) return@LaunchedEffect
+        val perm = if (android.os.Build.VERSION.SDK_INT >= 33) android.Manifest.permission.READ_MEDIA_IMAGES
+            else android.Manifest.permission.READ_EXTERNAL_STORAGE
+        val act = context as? android.app.Activity ?: return@LaunchedEffect
+        if (androidx.core.content.ContextCompat.checkSelfPermission(act, perm) != android.content.pm.PackageManager.PERMISSION_GRANTED)
+            androidx.core.app.ActivityCompat.requestPermissions(act, arrayOf(perm), 11)
+    }
     var dueReminder by remember { mutableStateOf<com.novatv.app.premium.Reminder?>(null) }
     LaunchedEffect(Unit) {
         while (true) {
             delay(15_000)
             app.recordings.tick()
-            if (dueReminder == null) app.reminders.takeDue().firstOrNull()?.let { dueReminder = it }
+            val st = app.lastSettings
+            if (dueReminder == null) app.reminders.takeDue(beforeMs = (st?.int("epg.reminder_before") ?: 0) * 60_000L)
+                .firstOrNull()?.let { dueReminder = it }
+            com.novatv.app.boot.WakeAlarms.scheduleNextReminder(context)
         }
     }
 
@@ -183,6 +215,7 @@ private fun AppRoot(settings: AppSettings, onFinish: () -> Unit) {
             Screen.Home -> GuideScreen(
                 settings = settings,
                 onPlay = { queue, channel ->
+                    app.fromGuidePreview = settings.bool("epg.show_preview")
                     app.playQueue = queue
                     push(Screen.Player(channel.id))
                 },
@@ -193,6 +226,9 @@ private fun AppRoot(settings: AppSettings, onFinish: () -> Unit) {
             Screen.GetPremium -> GetPremiumScreen(onClose = ::pop)
             Screen.Search -> SearchScreen(settings) { queue, channel ->
                 app.playQueue = queue
+                // Other › Search › "Stay on search screen when switching channels": otherwise Back from
+                // the player goes to the guide, not back to Search.
+                if (!settings.bool("search.stay")) pop()
                 push(Screen.Player(channel.id))
             }
             is Screen.Info -> InfoScreen(screen.title, screen.text)
@@ -251,7 +287,8 @@ private fun AppRoot(settings: AppSettings, onFinish: () -> Unit) {
     com.novatv.app.update.UpdatePrompt(show = stack.last() !is Screen.Player && stack.last() !is Screen.VodPlayer)
 
     dueReminder?.let { r ->
-        com.novatv.app.ui.ReminderPopup(r, onWatch = {
+        com.novatv.app.ui.ReminderPopup(r,
+            timeoutSec = settings.int("reminders.popup_timeout"), defaultAction = settings.str("reminders.default_action"), onWatch = {
             dueReminder = null
             app.playlists.channels.value.firstOrNull { it.id == r.channelId }?.let { ch ->
                 app.playQueue = app.playlists.channels.value
