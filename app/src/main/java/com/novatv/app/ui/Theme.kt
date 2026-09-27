@@ -40,8 +40,9 @@ fun AppTheme(settings: AppSettings, content: @Composable () -> Unit) {
             surfaceVariant = Color(0xFF1A3050))
         "dark_grey" -> darkColorScheme(primary = accent, background = Color(0xFF26282C), surface = Color(0xFF303338),
             surfaceVariant = Color(0xFF3B3F45))
-        else -> darkColorScheme(primary = accent, background = Color(0xFF15171B), surface = Color(0xFF212429),
-            surfaceVariant = Color(0xFF2C3036))
+        // Default, like TiviMate's photos: a real dark black guide with dark grey menus and panels.
+        else -> darkColorScheme(primary = accent, background = Color(0xFF0B0C0E), surface = Color(0xFF17181B),
+            surfaceVariant = Color(0xFF232529))
     }
     val scale = when (settings.str("appearance.font")) {
         "small" -> 0.9f
