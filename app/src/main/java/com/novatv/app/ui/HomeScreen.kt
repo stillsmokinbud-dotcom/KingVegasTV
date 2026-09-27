@@ -206,7 +206,8 @@ fun GuideScreen(
     val windowMs = settings.int("epg.timeline_hours").coerceAtLeast(1) * HOUR + 15 * 60_000L
     if (row > chs.lastIndex) row = chs.lastIndex.coerceAtLeast(0)
     // TiviMate: the highlighted row stays in the middle while the list scrolls under it.
-    val top = (row - rows / 2).coerceIn(0, (chs.size - rows).coerceAtLeast(0))
+    // (8 rows: the highlighted one is the 4th, exactly as in TiviMate.)
+    val top = (row - (rows - 1) / 2).coerceIn(0, (chs.size - rows).coerceAtLeast(0))
     val channel = chs.getOrNull(row)
     // TiviMate: the preview keeps playing what you were watching; moving through the guide
     // doesn't switch it. Before anything was played it follows the highlighted channel.
@@ -737,16 +738,11 @@ fun ProgressBar(fraction: Float, modifier: Modifier = Modifier) {
 
 @Composable
 fun ChannelLogo(settings: AppSettings, c: Channel, width: Dp) {
-    val initials = c.name.split(' ').filter { it.isNotBlank() }.take(3).joinToString("") { it.take(1) }.uppercase()
-    val bg = remember(c.group, c.name) {
-        val h = ((c.group + c.name).hashCode() and 0x7fffffff) % 360
-        Color.hsv(h.toFloat(), 0.45f, 0.42f)
-    }
+    // TiviMate: just the logo on the background (no colored box); channels without a logo show nothing.
     Box(
-        Modifier.size(width, width * 0.75f).clip(RoundedCornerShape(4.dp)).background(bg),
+        Modifier.size(width, width * 0.62f),
         contentAlignment = Alignment.Center,
     ) {
-        Text(initials, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
         val app = LocalContext.current.app
         val logo = remember(c.id, c.logo, settings) { Logos.resolve(c, settings, app.epg.data.value, app.playlists) }
         if (logo != null) {
@@ -815,7 +811,7 @@ private fun GuideGrid(
     val animated = settings.bool("guide.animated_scroll")
     LaunchedEffect(top, group.name) {
         if (animated && kotlin.math.abs(scroll.value - top) <= rows) {
-            scroll.animateTo(top.toFloat(), androidx.compose.animation.core.tween(140, easing = androidx.compose.animation.core.LinearOutSlowInEasing))
+            scroll.animateTo(top.toFloat(), androidx.compose.animation.core.tween(170, easing = androidx.compose.animation.core.FastOutSlowInEasing))
         } else scroll.snapTo(top.toFloat())
     }
 
@@ -855,10 +851,12 @@ private fun GuideGrid(
         // "Now" line
         if (now >= windowStart && now < windowEnd) {
             val full = settings.bool("guide.time_indicator_full")
+            // TiviMate: a small light dot on the timeline and a thin light line down through the programs.
+            val lineColor = colors.onBackground.copy(alpha = 0.75f)
             Box(Modifier.offset(x = CHANNEL_COL + xOf(now) - 3.dp, y = headerH - 4.dp).size(7.dp).clip(RoundedCornerShape(4.dp))
-                .background(colors.primary))
+                .background(lineColor))
             Box(Modifier.offset(x = CHANNEL_COL + xOf(now), y = headerH).width(1.dp)
-                .then(if (full) Modifier.fillMaxHeight() else Modifier.height(8.dp)).background(colors.primary))
+                .then(if (full) Modifier.fillMaxHeight() else Modifier.height(8.dp)).background(lineColor.copy(alpha = 0.5f)))
         }
     }
 }
@@ -870,7 +868,7 @@ private fun GuideTimeline(settings: AppSettings, now: Long, windowStart: Long, w
     val colors = MaterialTheme.colorScheme
     Row(Modifier.fillMaxWidth().height(headerH)) {
         Text(dateTimeText(now, settings, context), fontSize = 14.sp, fontWeight = FontWeight.Medium,
-            color = colors.primary, maxLines = 1,
+            color = colors.onBackground.copy(alpha = 0.9f), maxLines = 1,
             overflow = TextOverflow.Ellipsis, modifier = Modifier.width(CHANNEL_COL).padding(start = 24.dp, top = 8.dp))
         Box(Modifier.width(progWidth).fillMaxHeight()) {
             val dayOf = { ts: Long -> java.util.Calendar.getInstance().apply { timeInMillis = ts }.get(java.util.Calendar.DAY_OF_YEAR) }
@@ -918,7 +916,7 @@ private fun GuideRowItem(
             val fg = if (chanFocused && white) Color(0xFF16181C) else if (chanFocused) Color.White
                 else if (isRow && settings.bool("guide.highlight_current_channel")) colors.primary else colors.onBackground
             if (settings.bool("channels.show_numbers")) Text("${c.number ?: ""}", fontSize = 14.sp, color = fg.copy(alpha = 0.85f), modifier = Modifier.width(38.dp))
-            ChannelLogo(settings, c, 40.dp)
+            ChannelLogo(settings, c, 52.dp)
             if (settings.bool("guide.show_names")) {
                 Text(c.name, fontSize = 15.sp, color = fg, maxLines = if (settings.bool("guide.two_line_names")) 2 else 1,
                     overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
@@ -936,9 +934,11 @@ private fun GuideRowItem(
             for (cell in cells) {
                 val focused = focusTime >= 0 && cell.start <= focusTime && cell.end > focusTime
                 val w = xOf(cell.end) - xOf(cell.start)
-                val bg = if (focused) (if (white) Color.White else colors.primary) else colors.onBackground.copy(alpha = 0.10f)
+                // TiviMate: the highlighted channel's whole row is a shade lighter; the selected program is white.
+                val bg = if (focused) (if (white) Color.White else colors.primary)
+                    else colors.onBackground.copy(alpha = if (isRow) 0.20f else 0.10f)
                 val fg = when {
-                    focused -> if (white) Color(0xFF16181C) else Color.White
+                    focused -> if (white) Color(0xFF6E7278) else Color.White
                     cell.program == null -> colors.onBackground.copy(alpha = 0.6f)
                     else -> colors.onBackground.copy(alpha = 0.92f)
                 }
