@@ -157,11 +157,14 @@ fun GuideScreen(
     val locked by remember(DataKeys.LOCKED_GROUPS) { app.settings.listFlow(DataKeys.LOCKED_GROUPS) }.collectAsState(initial = emptyList())
     val favorites by remember(DataKeys.FAVORITES) { app.settings.listFlow(DataKeys.FAVORITES) }.collectAsState(initial = emptyList())
     val recent by remember(DataKeys.RECENT) { app.settings.listFlow(DataKeys.RECENT) }.collectAsState(initial = emptyList())
-    val groups by produceState(emptyList<ChannelGroup>(), channels, settings, hidden, locked, favorites, recent) {
+    // Starts from the groups the guide last showed, so coming back from full screen or Settings shows
+    // the guide at once (no blank "No channels" screen flashing while the list is sorted again).
+    val groups by produceState(app.guideGroups, channels, settings, hidden, locked, favorites, recent) {
         // Off the main thread: sorting and grouping 10,000+ channels would freeze the screen.
-        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+        val fresh = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
             repo.organize(channels, settings, hidden.toSet(), locked.toSet(), favorites, recent)
         }
+        if (fresh.isNotEmpty() || channels.isEmpty()) { value = fresh; app.guideGroups = fresh }
     }
     val now by produceState(System.currentTimeMillis()) {
         while (true) { delay(30_000); value = System.currentTimeMillis() }
@@ -535,10 +538,12 @@ fun GuideScreen(
         val railExpandedNow = (background && menuBehind) || railFocused || groups.isEmpty()
         val push by androidx.compose.animation.core.animateDpAsState(
             if (!drawerShown) 0.dp else (if (railExpandedNow) RAIL_OPEN else RAIL_CLOSED) + GROUPS_COL,
-            androidx.compose.animation.core.tween(200, easing = androidx.compose.animation.core.FastOutSlowInEasing), label = "push")
+            androidx.compose.animation.core.tween(280, easing = androidx.compose.animation.core.FastOutSlowInEasing), label = "push")
         Box(Modifier.fillMaxSize().offset { androidx.compose.ui.unit.IntOffset(push.roundToPx(), 0) }) {
         when {
             playlists?.isEmpty() == true -> Welcome(onAddPlaylist, onSettings = { onNavigate(MenuDest.SETTINGS) }, background = background)
+            // Channels are there but the groups are still being sorted: show nothing for that instant.
+            (group == null || chs.isEmpty()) && channels.isNotEmpty() && groups.isEmpty() -> Unit
             group == null || chs.isEmpty() -> CenterMessage(
                 playlistStatus ?: "No channels here yet",
                 "Press Left for the menu",
@@ -569,8 +574,8 @@ fun GuideScreen(
         // Slides in from the left (TiviMate); animated so it doesn't "jump" onto the screen.
         androidx.compose.animation.AnimatedVisibility(
             visible = drawerShown,
-            enter = androidx.compose.animation.slideInHorizontally(androidx.compose.animation.core.tween(200, easing = androidx.compose.animation.core.FastOutSlowInEasing)) { -it },
-            exit = androidx.compose.animation.slideOutHorizontally(androidx.compose.animation.core.tween(200, easing = androidx.compose.animation.core.FastOutSlowInEasing)) { -it },
+            enter = androidx.compose.animation.slideInHorizontally(androidx.compose.animation.core.tween(280, easing = androidx.compose.animation.core.FastOutSlowInEasing)) { -it },
+            exit = androidx.compose.animation.slideOutHorizontally(androidx.compose.animation.core.tween(280, easing = androidx.compose.animation.core.FastOutSlowInEasing)) { -it },
         ) {
             SideDrawer(
                 groups = groups, groupIndex = groupIndex,
@@ -1037,7 +1042,7 @@ private fun SideDrawer(
     val colors = MaterialTheme.colorScheme
     val railBg = colors.surfaceVariant
     val railWidth by androidx.compose.animation.core.animateDpAsState(
-        if (railExpanded) RAIL_OPEN else RAIL_CLOSED, androidx.compose.animation.core.tween(200, easing = androidx.compose.animation.core.FastOutSlowInEasing), label = "rail")
+        if (railExpanded) RAIL_OPEN else RAIL_CLOSED, androidx.compose.animation.core.tween(280, easing = androidx.compose.animation.core.FastOutSlowInEasing), label = "rail")
     Row(Modifier.fillMaxHeight()) {
         // Icon rail; expands to show labels (TiviMate's main menu) when it has focus.
         Column(
