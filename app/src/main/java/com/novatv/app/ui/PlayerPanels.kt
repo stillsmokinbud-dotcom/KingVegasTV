@@ -171,7 +171,9 @@ internal fun PlayerInfoPanel(
 
     Box(
         Modifier.fillMaxSize()
-            .then(if (interactive) Modifier.onPreviewKeyEvent { if (it.type == KeyEventType.KeyDown) lastKey++; false }
+            .then(if (interactive) Modifier.onPreviewKeyEvent {
+                    if (it.key == Key.Back) { if (it.type == KeyEventType.KeyUp) onAction("dismiss"); return@onPreviewKeyEvent true }
+                    if (it.type == KeyEventType.KeyDown) lastKey++; false }
                 .focusProperties { exit = { FocusRequester.Cancel } }.focusGroup() else Modifier)
     ) {
         // Top corners: playlist and group name, clock (Settings › Appearance › Player › Info panel)
@@ -324,6 +326,8 @@ internal fun PlayerMenuRow(
     LaunchedEffect(lastKey) { kotlinx.coroutines.delay(8000); onDismiss() }
     Box(Modifier.fillMaxSize()
         .onPreviewKeyEvent { e ->
+            // Back closes the menu right here (doesn't depend on the system Back handling).
+            if (e.key == Key.Back) { if (e.type == KeyEventType.KeyUp) onDismiss(); return@onPreviewKeyEvent true }
             if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
             lastKey++
             if (e.key == Key.DirectionUp || e.key == Key.DirectionDown) { onDismiss(); true } else false
