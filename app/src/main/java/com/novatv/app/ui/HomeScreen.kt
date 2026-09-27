@@ -249,11 +249,11 @@ fun GuideScreen(
         focusTime = System.currentTimeMillis()
     }
 
-    fun handleKey(key: Key): Boolean {
+    fun handleKey(key: Key, held: Boolean = false): Boolean {
         if (key == Key.Menu) { drawerOpen = true; return true }
         val c = channel
         if (c == null || groupLocked) {
-            if (key == Key.DirectionLeft) { drawerOpen = true; return true }
+            if (key == Key.DirectionLeft) { drawerOnMenu = false; drawerOpen = true; return true }
             return false
         }
         when (key) {
@@ -283,18 +283,23 @@ fun GuideScreen(
                 return true
             }
             Key.DirectionLeft -> {
-                if (onChannelCol) { drawerOpen = true; return true }
+                if (onChannelCol) { drawerOnMenu = false; drawerOpen = true; return true }
                 val cell = cellAt(c, focusTime)
                 val nowFloor = System.currentTimeMillis() / HALF_HOUR * HALF_HOUR
                 // Browsing into the past only makes sense on channels with catch-up.
-                val earliest = if (c.catchupDays > 0) {
+                // TiviMate: a single Left from the program on now opens the groups; holding Left (Long Left)
+                // goes on into past programs on channels with catch-up.
+                val earliest = if (c.catchupDays > 0 && held) {
                     (System.currentTimeMillis() - minOf(c.catchupDays, maxOf(1, settings.int("epg.past_days"))) * 86_400_000L) / HALF_HOUR * HALF_HOUR
                 } else nowFloor
                 when {
-                    cell.start > windowStart -> focusTime = maxOf(cellAt(c, cell.start - 1).start, windowStart)
-                    windowStart > earliest -> { windowStart -= HALF_HOUR; focusTime = windowStart }
+                    cell.start > windowStart && (held || cell.start > System.currentTimeMillis()) ->
+                        focusTime = maxOf(cellAt(c, cell.start - 1).start, windowStart)
+                    windowStart > earliest && held -> { windowStart -= HALF_HOUR; focusTime = windowStart }
+                    // Left while looking at past programs: back to now first.
+                    !held && cell.end <= System.currentTimeMillis() -> resetToNow()
                     // TiviMate: Left from the current program opens the groups list.
-                    else -> drawerOpen = true
+                    else -> { drawerOnMenu = false; drawerOpen = true }
                 }
                 return true
             }
@@ -335,6 +340,8 @@ fun GuideScreen(
         val onNow = channel?.let { cellAt(it, focusTime).let { cell -> cell.start <= nowT && cell.end > nowT } } ?: true
         val scrolled = onChannelCol || !onNow || windowStart != nowT / HALF_HOUR * HALF_HOUR
         when {
+            // Back on the groups closes them (TiviMate); Back on the main menu twice exits.
+            drawerOpen && !railFocused -> drawerOpen = false
             drawerOpen -> {
                 val now = System.currentTimeMillis()
                 if (now - lastBackInMenu < 2500) (context as? android.app.Activity)?.finish()
@@ -346,14 +353,8 @@ fun GuideScreen(
             settings.bool("guide.back_to_current") && scrolled -> resetToNow()
             // TiviMate: Back from the guide returns to the channel playing full screen.
             playingChannel != null -> onPlay(app.playQueue.ifEmpty { channels }, playingChannel)
-            else -> {
-                val now = System.currentTimeMillis()
-                if (now - lastBackInMenu < 2500) (context as? android.app.Activity)?.finish()
-                else {
-                    lastBackInMenu = now
-                    android.widget.Toast.makeText(context, "Press Back again to exit", android.widget.Toast.LENGTH_SHORT).show()
-                }
-            }
+            // Nothing playing: Back opens the menu (Back again there exits).
+            else -> { drawerOnMenu = true; drawerOpen = true }
         }
     }
 
@@ -368,6 +369,7 @@ fun GuideScreen(
                 if (settings.premium && settings.bool("parental.enabled") && settings.bool(lock)) pinFor = go else go()
             }
             "groups" -> { drawerOnMenu = false; drawerOpen = true }
+            "side_menu" -> { drawerOnMenu = true; drawerOpen = true }
             "next_programs" -> handleKey(Key.DirectionRight)
             "page_up" -> handleKey(Key.PageUp)
             "page_down" -> handleKey(Key.PageDown)
@@ -503,7 +505,7 @@ fun GuideScreen(
                 if (onChannelCol && channel != null && e.key == Key.DirectionRight && mapped("right") != "next_programs") {
                     guideAction(mapped("right")); return@onKeyEvent true
                 }
-                handleKey(e.key)
+                handleKey(e.key, held = e.nativeKeyEvent.repeatCount > 0)
             }
             // Only the live guide takes the remote itself; behind Settings or on the welcome screen it must not.
             .focusable(enabled = !background && playlists?.isEmpty() != true)
