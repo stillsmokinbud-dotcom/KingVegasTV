@@ -59,7 +59,7 @@ data class Episode(
 private data class VodCache(val movies: List<VodItem> = emptyList(), val series: List<VodItem> = emptyList(), val updated: Long = 0, val version: Int = 0)
 
 /** Bump when the loader changes so old (possibly incomplete) caches are downloaded again. */
-private const val VOD_CACHE_VERSION = 2
+private const val VOD_CACHE_VERSION = 3
 
 enum class VodKind { MOVIES, SHOWS }
 
@@ -81,6 +81,9 @@ class VodRepository(
     val series: StateFlow<List<VodItem>> = _series.asStateFlow()
     private val _status = MutableStateFlow<String?>(null)
     val status: StateFlow<String?> = _status.asStateFlow()
+    /** Why movies/shows came back empty for a playlist (shown under the playlist in Settings). */
+    private val _problems = MutableStateFlow<Map<String, String>>(emptyMap())
+    val problems: StateFlow<Map<String, String>> = _problems.asStateFlow()
 
     private fun cacheFile(id: String) = File(context.filesDir, "vod_$id.json")
 
@@ -129,8 +132,17 @@ class VodRepository(
                 _status.value = "Loading movies and shows from ${p.name}…"
                 try {
                     val ua = p.userAgent.ifBlank { DEFAULT_USER_AGENT }
-                    val movies = loadMovies(p, login, ua)
-                    val series = loadSeries(p, login, ua)
+                    val problem = StringBuilder()
+                    var movies = runCatching { loadMovies(p, login, ua, problem) }
+                        .getOrElse { problem.append(it.message ?: it.javaClass.simpleName); emptyList() }
+                    _status.value = "Loading shows from ${p.name}…"
+                    var series = runCatching { loadSeries(p, login, ua) }.getOrElse { emptyList() }
+                    // Never replace a good list with an empty one because of a network hiccup.
+                    val old = readCache(p.id)
+                    if (movies.isEmpty() && !old?.movies.isNullOrEmpty()) movies = old!!.movies
+                    if (series.isEmpty() && !old?.series.isNullOrEmpty()) series = old!!.series
+                    _problems.value = if (movies.isEmpty()) _problems.value + (p.id to problem.toString().ifBlank { "the server sent no movies" })
+                        else _problems.value - p.id
                     writeCacheFile(p.id, VodCache(movies, series, System.currentTimeMillis(), VOD_CACHE_VERSION))
                     total += movies.size + series.size
                 } catch (e: Exception) {
@@ -241,28 +253,41 @@ class VodRepository(
         )
     }
 
-    private fun loadMovies(p: Playlist, l: Login, ua: String): List<VodItem> {
-        val cats = categories(l, "get_vod_categories", ua)
-        // 1) Everything in one streamed request (read item by item, so even 100k+ movies fit in memory).
-        val all = runCatching {
+    private fun loadMovies(p: Playlist, l: Login, ua: String, problem: StringBuilder): List<VodItem> {
+        val cats = runCatching { categories(l, "get_vod_categories", ua) }.getOrElse { emptyMap() }
+        fun progress(n: Int) { if (n % 2000 == 0) _status.value = "Loading movies from ${p.name}… ${"%,d".format(n)}" }
+        // 1) The whole list in one streamed request (item by item, so 100k+ movies fit in memory).
+        //    Tried with our User-Agent, then with a common player one (some panels only answer those).
+        for (agent in listOf(ua, COMMON_UA).distinct()) {
             val out = ArrayList<VodItem>()
-            streamObjects("${api(l)}&action=get_vod_streams", ua) { o -> movieItem(p, l, cats, o)?.let(out::add) }
-            out
-        }.getOrNull()
-        if (!all.isNullOrEmpty()) return all.distinctBy { it.id }
-        // 2) Some servers time out or refuse the full list: fetch one category at a time instead.
+            val r = runCatching {
+                streamObjects("${api(l)}&action=get_vod_streams", agent) { o ->
+                    movieItem(p, l, cats, o)?.let { out.add(it); progress(out.size) }
+                }
+            }
+            if (out.isNotEmpty()) return out.distinctBy { it.id }
+            r.exceptionOrNull()?.let { problem.clear(); problem.append("full list: ${it.message ?: it.javaClass.simpleName}") }
+        }
+        // 2) One category at a time (servers that refuse or time out on the full list).
+        if (cats.isEmpty()) { if (problem.isEmpty()) problem.append("no movie categories"); return emptyList() }
         val out = ArrayList<VodItem>()
-        var fails = 0
+        var failed = 0
         for ((catId, _) in cats) {
             if (catId == null) continue
-            val ok = runCatching {
-                streamObjects("${api(l)}&action=get_vod_streams&category_id=${enc(catId)}", ua) { o ->
-                    movieItem(p, l, cats, o)?.let(out::add)
-                }
-            }.isSuccess
-            if (!ok && ++fails > 10 && out.isEmpty()) break
+            var ok = false
+            for (attempt in 0..1) {
+                ok = runCatching {
+                    streamObjects("${api(l)}&action=get_vod_streams&category_id=${enc(catId)}", COMMON_UA) { o ->
+                        movieItem(p, l, cats, o)?.let { out.add(it); progress(out.size) }
+                    }
+                }.onFailure { e -> problem.clear(); problem.append("category $catId: ${e.message ?: e.javaClass.simpleName}") }.isSuccess
+                if (ok) break
+                Thread.sleep(1500)
+            }
+            if (!ok) failed++
+            if (failed > 15 && out.isEmpty()) break
+            Thread.sleep(40) // be gentle: some panels block rapid-fire requests
         }
-        if (out.isEmpty() && all == null) throw IOException("The server didn't send the movie list")
         return out.distinctBy { it.id }
     }
 
@@ -382,6 +407,7 @@ class VodRepository(
     }
 
     private val YEAR = Regex("""\((\d{4})\)""")
+    private val COMMON_UA = "okhttp/4.12.0"
     private fun JsonElement?.str(): String? = (this as? JsonPrimitive)?.content?.takeIf { it != "null" && it.isNotEmpty() }
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
 }
