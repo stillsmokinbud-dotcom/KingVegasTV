@@ -430,10 +430,10 @@ private fun LazyListScope.dynamicRows(key: String, s: AppSettings, push: (Page) 
         val vodProblems by app.vod.problems.collectAsState()
         val list = if (s.str("playlists.sort") == "name") all.sortedBy { it.name.lowercase() } else all
         androidx.compose.foundation.layout.Column {
-            PlaylistType.entries.forEach { type ->
-                val ofType = list.filter { it.type == type }
+            // TiviMate: one plain list of playlists (no headings per type).
+            run {
+                val ofType = list
                 if (ofType.isNotEmpty()) {
-                    PanelHeader(typeTitle(type))
                     ofType.forEach { p ->
                         PanelRow(
                             p.name,
