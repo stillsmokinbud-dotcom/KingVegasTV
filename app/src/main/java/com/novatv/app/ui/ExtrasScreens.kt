@@ -214,7 +214,7 @@ private fun MultiviewTile(settings: AppSettings, channel: Channel, muted: Boolea
     val context = LocalContext.current
     val repo = context.app.playlists
     val built = remember(key) { PlayerFactory(context, repo.http).create(settings, DEFAULT_USER_AGENT) }
-    DisposableEffect(key) { onDispose { built.player.release() } }
+    DisposableEffect(key) { onDispose { PlayerFactory.forget(built.player); built.player.release() } }
     LaunchedEffect(key) {
         built.dataSource.setUserAgent(channel.userAgent ?: repo.userAgentFor(repo.playlistFor(channel), settings))
         built.player.setMediaItem(PlayerFactory.mediaItem(channel.url))
