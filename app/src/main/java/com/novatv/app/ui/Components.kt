@@ -105,7 +105,8 @@ fun TvRow(
     val white = LocalSelectionWhite.current
     val bg = when {
         focused -> if (white) Color.White else colors.primary
-        selected -> colors.surfaceVariant
+        // A light see-through pill: visible on the menu rail, the guide and the settings panel alike.
+        selected -> Color.White.copy(alpha = 0.13f)
         else -> Color.Transparent
     }
     Row(
@@ -174,22 +175,23 @@ fun RowTitle(title: String, summary: String? = null, dim: Boolean = false, modif
  * Pages inside it (submenus, radio lists) replace each other; Back goes up one page.
  */
 @Composable
-fun SidePanel(title: String, width: Dp = 500.dp, content: @Composable () -> Unit) {
+fun SidePanel(title: String, width: Dp = 400.dp, content: @Composable () -> Unit) {
     val colors = MaterialTheme.colorScheme
     // Slides in from the right once when the panel opens (drawn on the GPU layer: no re-layout per frame).
     val slide = remember { androidx.compose.animation.core.Animatable(1f) }
     LaunchedEffect(Unit) { slide.animateTo(0f, androidx.compose.animation.core.tween(210)) }
-    Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.55f))) {
+    // TiviMate: the screen behind stays visible (only lightly dimmed) and the panel is a lighter grey.
+    Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.18f))) {
         Column(
             Modifier
                 .align(Alignment.CenterEnd)
                 .width(width)
                 .fillMaxHeight()
                 .graphicsLayer { translationX = slide.value * size.width }
-                .background(colors.surface)
+                .background(colors.surfaceVariant)
         ) {
             Box(
-                Modifier.fillMaxWidth().background(colors.surfaceVariant).padding(start = 28.dp, end = 20.dp, top = 30.dp, bottom = 18.dp)
+                Modifier.fillMaxWidth().background(Color.White.copy(alpha = 0.07f)).padding(start = 28.dp, end = 20.dp, top = 30.dp, bottom = 18.dp)
             ) {
                 Text(title, fontSize = 24.sp, fontWeight = FontWeight.Medium, color = colors.onSurface,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -478,7 +480,7 @@ private fun PinPickerDialog(title: String, length: Int, onDismiss: () -> Unit, o
                     Text("▲", fontSize = 12.sp, color = if (on) MaterialTheme.colorScheme.onSurface else Color.Transparent)
                     Box(
                         Modifier.size(52.dp, 60.dp).clip(RoundedCornerShape(8.dp))
-                            .background(if (on) Color.White else MaterialTheme.colorScheme.surfaceVariant),
+                            .background(if (on) Color.White else Color.White.copy(alpha = 0.25f)),
                         contentAlignment = Alignment.Center,
                     ) {
                         Text("${digits[i]}", fontSize = 26.sp, fontWeight = FontWeight.Bold,
