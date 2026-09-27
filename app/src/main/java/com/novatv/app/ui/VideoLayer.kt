@@ -72,6 +72,19 @@ fun SharedVideoLayer(settings: AppSettings) {
                 descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
                 setShutterBackgroundColor(android.graphics.Color.BLACK)
                 player = built.player
+                // TiviMate keeps the TV awake whenever live TV is playing, in the guide preview too.
+                // (Before, only full screen did, so the TV / Fire Stick went to sleep after ~20 minutes
+                // in the guide and the app was closed.)
+                built.player.addListener(object : androidx.media3.common.Player.Listener {
+                    override fun onIsPlayingChanged(isPlaying: Boolean) {
+                        var c: android.content.Context? = ctx
+                        while (c is android.content.ContextWrapper && c !is android.app.Activity) c = c.baseContext
+                        (c as? android.app.Activity)?.window?.let { w ->
+                            if (isPlaying) w.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                            else if (!VideoStage.keepScreenOn.value) w.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                        }
+                    }
+                })
             }
         },
         update = {
