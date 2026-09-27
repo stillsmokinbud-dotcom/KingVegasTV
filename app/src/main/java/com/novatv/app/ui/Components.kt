@@ -48,6 +48,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -174,12 +175,16 @@ fun RowTitle(title: String, summary: String? = null, dim: Boolean = false, modif
 @Composable
 fun SidePanel(title: String, width: Dp = 500.dp, content: @Composable () -> Unit) {
     val colors = MaterialTheme.colorScheme
+    // Slides in from the right once when the panel opens (drawn on the GPU layer: no re-layout per frame).
+    val slide = remember { androidx.compose.animation.core.Animatable(1f) }
+    LaunchedEffect(Unit) { slide.animateTo(0f, androidx.compose.animation.core.tween(210)) }
     Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.55f))) {
         Column(
             Modifier
                 .align(Alignment.CenterEnd)
                 .width(width)
                 .fillMaxHeight()
+                .graphicsLayer { translationX = slide.value * size.width }
                 .background(colors.surface)
         ) {
             Box(
