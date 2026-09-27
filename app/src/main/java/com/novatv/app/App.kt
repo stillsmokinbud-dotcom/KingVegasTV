@@ -48,6 +48,11 @@ class App : Application() {
     @Volatile var guideRow: Int = 0
     /** Group the playing channel was started from (the guide goes back to it after full screen). */
     @Volatile var playGroupIndex: Int = -1
+    /** Sleep timer: when the app closes (0 = off). */
+    @Volatile var sleepAt: Long = 0L
+    /** Search box text and the result you opened (Back from it returns to the same search). */
+    @Volatile var searchQuery: String = ""
+    @Volatile var searchFocus: String? = null
     /** The guide's menu item that opened the current screen (the guide reopens with the menu on it). */
     @Volatile var guideMenuReturn: com.novatv.app.ui.MenuDest? = null
     /** Latest settings, for code outside Compose. */
@@ -92,6 +97,11 @@ class App : Application() {
                 settings.set("general.recent_group", "false")
                 settings.set("groups.sort", "playlist")
                 settings.set("data.groups_like_tivimate_v1", "done")
+            }
+            // One time: Search starts listening as soon as it opens (TiviMate).
+            if (settings.current().str("data.voice_search_v1") != "done") {
+                settings.set("search.voice", "true")
+                settings.set("data.voice_search_v1", "done")
             }
             // One time: the dark black / dark grey look (like TiviMate) for everyone.
             if (settings.current().str("data.theme_dark_v1") != "done") {
