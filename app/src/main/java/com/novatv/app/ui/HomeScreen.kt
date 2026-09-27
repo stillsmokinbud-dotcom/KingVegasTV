@@ -210,8 +210,9 @@ fun GuideScreen(
     val channel = chs.getOrNull(row)
     // TiviMate: the preview keeps playing what you were watching; moving through the guide
     // doesn't switch it. Before anything was played it follows the highlighted channel.
-    val playingChannel = remember(app.lastPlayedId, channels) {
-        app.lastPlayedId?.let { id -> channels.firstOrNull { it.id == id } }
+    var playingId by remember { mutableStateOf(app.lastPlayedId) }
+    val playingChannel = remember(playingId, channels) {
+        playingId?.let { id -> channels.firstOrNull { it.id == id } }
     }
 
     fun cellAt(c: Channel, t: Long): GuideCell =
@@ -219,7 +220,15 @@ fun GuideScreen(
             .firstOrNull { it.start <= t && it.end > t } ?: GuideCell(t, t + HOUR, null)
 
     fun open(g: ChannelGroup, c: Channel) {
-        val go = { onPlay(g.channels, c) }
+        // TiviMate: OK on another channel plays it in the preview and stays in the guide;
+        // OK on the channel that's already playing goes full screen.
+        val go = {
+            if (settings.bool("epg.show_preview") && c.id != playingId) {
+                playingId = c.id
+                app.lastPlayedId = c.id
+                app.playQueue = g.channels
+            } else onPlay(g.channels, c)
+        }
         if (g.locked && g.name !in unlocked.value) pinFor = { unlocked.value = unlocked.value + g.name; go() } else go()
     }
 
@@ -464,10 +473,10 @@ fun GuideScreen(
                 Column(Modifier.fillMaxSize()) {
                     val focusedCell = if (onChannelCol) null else cellAt(c, focusTime)
                     val shown: Program? = focusedCell?.program ?: epg.at(c, now)
-                    TopInfo(settings, c, playingChannel ?: c, shown, favorites, epg, now, epgStatus ?: playlistStatus)
+                    TopInfo(settings, c, playingChannel ?: c, playingChannel != null, shown, favorites, epg, now, epgStatus ?: playlistStatus)
                     GuideGrid(
                         settings = settings, group = group, epg = epg, now = now,
-                        top = top, rows = rows, row = row, onChannelCol = onChannelCol,
+                        top = top, rows = rows, row = row, onChannelCol = onChannelCol, playingId = playingId,
                         focusTime = focusTime, windowStart = windowStart, windowMs = windowMs, favorites = favorites,
                         onTapChannel = { i -> if (row == i && onChannelCol) open(group, chs[i]) else { row = i; onChannelCol = true } },
                         onTapCell = { i, cell ->
@@ -622,7 +631,7 @@ fun GuideScreen(
 
 @Composable
 private fun TopInfo(
-    settings: AppSettings, c: Channel, preview: Channel, program: Program?, favorites: List<String>,
+    settings: AppSettings, c: Channel, preview: Channel, previewChosen: Boolean, program: Program?, favorites: List<String>,
     epg: EpgData, now: Long, status: String?,
 ) {
     // TiviMate layout: live preview top-left, program info to its right, channel name top-right.
@@ -632,7 +641,7 @@ private fun TopInfo(
     val showPreview = settings.bool("epg.show_preview")
     Row(Modifier.fillMaxWidth().height(230.dp).padding(start = 24.dp, end = 30.dp, top = 18.dp, bottom = 8.dp)) {
         if (showPreview) {
-            PreviewVideo(settings, preview, Modifier.size(356.dp, 200.dp).clip(RoundedCornerShape(6.dp)).background(Color.Black))
+            PreviewVideo(settings, preview, instant = previewChosen, modifier = Modifier.size(356.dp, 200.dp).clip(RoundedCornerShape(6.dp)).background(Color.Black))
             Spacer(Modifier.width(24.dp))
         }
         Column(Modifier.weight(1f)) {
@@ -709,7 +718,7 @@ fun ChannelLogo(settings: AppSettings, c: Channel, width: Dp) {
 
 /** Live mini-preview: the channel you're watching (or the highlighted one if nothing played yet). */
 @Composable
-private fun PreviewVideo(settings: AppSettings, channel: Channel, modifier: Modifier) {
+private fun PreviewVideo(settings: AppSettings, channel: Channel, instant: Boolean, modifier: Modifier) {
     val context = LocalContext.current
     val app = context.app
     val repo = app.playlists
@@ -718,7 +727,7 @@ private fun PreviewVideo(settings: AppSettings, channel: Channel, modifier: Modi
     DisposableEffect(Unit) { app.shared.attach(); onDispose { app.shared.detach() } }
     LaunchedEffect(channel.id) {
         if (app.shared.isPlaying(channel.id)) { built.player.playWhenReady = true; return@LaunchedEffect }
-        delay(700) // don't start a stream for every channel you scroll past
+        if (!instant) delay(700) // don't start a stream for every channel you scroll past
         built.dataSource.setUserAgent(channel.userAgent ?: repo.userAgentFor(repo.playlistFor(channel), settings))
         built.player.setMediaItem(PlayerFactory.mediaItem(PlayerFactory.viaUdpProxy(channel.url, settings)))
         built.player.prepare()
@@ -748,7 +757,7 @@ private fun PreviewVideo(settings: AppSettings, channel: Channel, modifier: Modi
 @Composable
 private fun GuideGrid(
     settings: AppSettings, group: ChannelGroup, epg: EpgData, now: Long,
-    top: Int, rows: Int, row: Int, onChannelCol: Boolean,
+    top: Int, rows: Int, row: Int, onChannelCol: Boolean, playingId: String?,
     focusTime: Long, windowStart: Long, windowMs: Long, favorites: List<String>,
     onTapChannel: (Int) -> Unit, onTapCell: (Int, GuideCell) -> Unit, onLongChannel: (Int) -> Unit,
 ) {
@@ -782,7 +791,6 @@ private fun GuideGrid(
             }
             Box(Modifier.padding(start = CHANNEL_COL).fillMaxWidth().height(1.dp).background(colors.onBackground.copy(alpha = 0.25f)))
             // Rows
-            val playingId = LocalContext.current.app.lastPlayedId
             for (i in top until minOf(chs.size, top + rows)) {
                 val c = chs[i]
                 val isRow = i == row
