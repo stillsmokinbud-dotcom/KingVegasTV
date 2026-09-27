@@ -1,10 +1,13 @@
 package com.novatv.app.ui
 
 import android.view.ViewGroup
+import androidx.compose.material.icons.filled.*
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -72,16 +75,29 @@ import kotlinx.coroutines.withContext
 
 private const val ALL = "\u0000all"
 private const val RECENT = "\u0000recent"
+const val VOD_MY_LIST = "\u0000mylist"
+private const val HISTORY = "\u0000history"
 
-/** Movies / TV Shows: categories on the left, posters on the right (TiviMate layout). */
+/**
+ * Movies / TV Shows, TiviMate layout: icon rail, categories (My list, History, All…), the highlighted
+ * title's details on top (rating, year • length • genre, cast, director, plot, backdrop) and posters below.
+ */
 @Composable
-fun VodBrowseScreen(kind: VodKind, onOpen: (VodItem) -> Unit) {
+fun VodBrowseScreen(
+    kind: VodKind,
+    startCategory: String? = null,
+    onNavigate: (MenuDest) -> Unit = {},
+    onOpen: (VodItem) -> Unit,
+) {
     val context = LocalContext.current
     val vod = context.app.vod
     val all by (if (kind == VodKind.MOVIES) vod.movies else vod.series).collectAsState()
     val status by vod.status.collectAsState()
+    val myIds by vod.myList.collectAsState()
+    val historyIds by vod.history.collectAsState()
     var error by remember { mutableStateOf<String?>(null) }
-    var category by remember { mutableStateOf(ALL) }
+    var category by remember { mutableStateOf(startCategory ?: ALL) }
+    var focusedItem by remember { mutableStateOf<VodItem?>(null) }
     val listFocus = remember { FocusRequester() }
 
     LaunchedEffect(Unit) {
@@ -93,48 +109,205 @@ fun VodBrowseScreen(kind: VodKind, onOpen: (VodItem) -> Unit) {
     val categories by produceState(emptyList<String>(), all) {
         value = withContext(Dispatchers.Default) { all.map { it.category }.distinct() }
     }
-    val shown by produceState(emptyList<VodItem>(), all, category) {
+    val byId by produceState(emptyMap<String, VodItem>(), all) {
+        value = withContext(Dispatchers.Default) { all.associateBy { it.id } }
+    }
+    val shown by produceState(emptyList<VodItem>(), all, category, byId, myIds, historyIds) {
         value = withContext(Dispatchers.Default) {
             when (category) {
                 ALL -> all
                 RECENT -> all.sortedByDescending { it.added }.take(100)
+                VOD_MY_LIST -> myIds.mapNotNull { byId[it] }
+                HISTORY -> historyIds.mapNotNull { byId[it] }
                 else -> all.filter { it.category == category }
             }
         }
     }
     val title = if (kind == VodKind.MOVIES) "Movies" else "TV Shows"
+    val allLabel = if (kind == VodKind.MOVIES) "All movies" else "All shows"
+    val colors = MaterialTheme.colorScheme
+    val hero = focusedItem?.takeIf { f -> shown.any { it.id == f.id } } ?: shown.firstOrNull()
 
-    Row(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+    Row(Modifier.fillMaxSize().background(colors.background)) {
+        VodRail(current = if (kind == VodKind.MOVIES) MenuDest.MOVIES else MenuDest.SHOWS, onNavigate = { d ->
+            if (d == MenuDest.MY_LIST) category = VOD_MY_LIST else onNavigate(d)
+        })
         // Categories
-        Column(Modifier.width(300.dp).fillMaxHeight().background(MaterialTheme.colorScheme.surface).padding(12.dp)) {
-            Text(title, fontSize = 24.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.padding(start = 12.dp, top = 12.dp, bottom = 12.dp))
+        Column(Modifier.width(280.dp).fillMaxHeight().background(colors.surface).padding(horizontal = 10.dp, vertical = 12.dp)) {
+            Text(title, fontSize = 22.sp, fontWeight = FontWeight.Medium, color = colors.onSurface,
+                modifier = Modifier.padding(start = 12.dp, top = 8.dp, bottom = 10.dp))
             LazyColumn {
-                val rows = listOf(ALL to "All · ${all.size}", RECENT to "Recently added") + categories.map { it to it }
+                val rows = listOf(
+                    VOD_MY_LIST to "My list", HISTORY to "History",
+                    ALL to allLabel, RECENT to "Recently added",
+                ) + categories.map { it to it }
                 itemsIndexed(rows) { i, (key, label) ->
+                    val count = when (key) {
+                        VOD_MY_LIST -> myIds.count { it in byId }
+                        HISTORY -> historyIds.count { it in byId }
+                        ALL -> all.size
+                        else -> null
+                    }
                     TvRow(
-                        modifier = if (i == 0) Modifier.focusRequester(listFocus) else Modifier,
+                        modifier = if (key == category) Modifier.focusRequester(listFocus) else Modifier,
                         selected = key == category,
                         onFocused = { category = key },
                         onClick = { category = key },
-                    ) { Text(label, fontSize = 15.sp, color = rowContentColor(), maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(label, fontSize = 15.sp, color = rowContentColor(), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f))
+                            if (count != null) Text("%,d".format(count), fontSize = 13.sp, color = rowContentColor(dimmed = true))
+                        }
+                    }
                 }
             }
         }
-        // Posters
-        Box(Modifier.weight(1f).fillMaxHeight().padding(16.dp)) {
+        // Details on top, posters below
+        Column(Modifier.weight(1f).fillMaxHeight()) {
             when {
                 all.isEmpty() && status != null -> CenterText(status!!)
                 all.isEmpty() -> CenterText(error?.let { "Couldn't load $title.\n$it" }
                     ?: "No ${title.lowercase()} yet.\nMovies and shows come from Xtream Codes logins (Settings › Playlists).")
-                else -> LazyVerticalGrid(columns = GridCells.Adaptive(150.dp), verticalArrangement = Arrangement.spacedBy(12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    itemsIndexed(shown, key = { _, it -> it.id }) { _, item -> PosterCard(item) { onOpen(item) } }
+                else -> {
+                    if (hero != null) VodHero(hero) else Spacer(Modifier.height(24.dp))
+                    if (shown.isEmpty()) CenterText(when (category) {
+                        VOD_MY_LIST -> "Nothing in My list yet.\nOpen a title and choose \"Add to My list\"."
+                        HISTORY -> "Nothing watched yet."
+                        else -> "Nothing here"
+                    })
+                    else LazyVerticalGrid(
+                        columns = GridCells.Adaptive(132.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp),
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 24.dp, end = 24.dp, bottom = 24.dp, top = 4.dp),
+                        modifier = Modifier.fillMaxSize(),
+                    ) {
+                        itemsIndexed(shown, key = { _, it -> it.id }) { _, item ->
+                            PosterCard(item, onFocused = { focusedItem = item }) { onOpen(item) }
+                        }
+                    }
                 }
             }
         }
     }
     AutoFocus(listFocus)
+}
+
+/** Narrow icon rail on the far left (TiviMate): TV, search, movies, shows, recordings, my list, settings. */
+@Composable
+private fun VodRail(current: MenuDest, onNavigate: (MenuDest) -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    val items = listOf(
+        MenuDest.SEARCH to androidx.compose.material.icons.Icons.Filled.Search,
+        MenuDest.GUIDE to androidx.compose.material.icons.Icons.Filled.Tv,
+        MenuDest.MOVIES to androidx.compose.material.icons.Icons.Filled.Movie,
+        MenuDest.SHOWS to androidx.compose.material.icons.Icons.Filled.VideoLibrary,
+        MenuDest.RECORDINGS to androidx.compose.material.icons.Icons.Filled.FiberDvr,
+        MenuDest.MY_LIST to androidx.compose.material.icons.Icons.Filled.BookmarkBorder,
+        MenuDest.SETTINGS to androidx.compose.material.icons.Icons.Filled.Settings,
+    )
+    Column(
+        Modifier.width(64.dp).fillMaxHeight().background(colors.surfaceVariant).padding(vertical = 18.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        items.forEach { (dest, icon) ->
+            var focused by remember { mutableStateOf(false) }
+            val active = dest == current
+            Box(
+                Modifier.padding(top = if (dest == MenuDest.SETTINGS) 24.dp else 0.dp)
+                    .width(44.dp).height(44.dp).clip(RoundedCornerShape(22.dp))
+                    .background(if (focused) Color.White else Color.Transparent)
+                    .onFocusChanged { focused = it.isFocused }
+                    .onPreviewKeyEvent { e ->
+                        val ok = e.key == Key.DirectionCenter || e.key == Key.Enter || e.key == Key.NumPadEnter
+                        if (ok && e.type == KeyEventType.KeyUp) { if (!active) onNavigate(dest); true } else ok
+                    }
+                    .focusable()
+                    .pointerInput(dest) { detectTapGestures { if (!active) onNavigate(dest) } },
+                contentAlignment = Alignment.Center,
+            ) {
+                androidx.compose.material3.Icon(icon, contentDescription = dest.label,
+                    tint = when {
+                        focused -> Color(0xFF16181C)
+                        active -> colors.primary
+                        else -> colors.onSurface.copy(alpha = 0.7f)
+                    })
+            }
+        }
+    }
+}
+
+/** Top area: title, rating badge, year • length • genre, cast, director, plot and a fading backdrop. */
+@Composable
+private fun VodHero(item: VodItem) {
+    val context = LocalContext.current
+    val vod = context.app.vod
+    val colors = MaterialTheme.colorScheme
+    val info by produceState(vod.cachedInfo(item), item.id) {
+        if (value == null) { delay(300); value = vod.info(item) } // don't hit the server for every poster you pass
+    }
+    val bg = colors.background
+    Box(Modifier.fillMaxWidth().height(270.dp)) {
+        val backdrop = info?.backdrop ?: item.poster
+        if (backdrop != null) {
+            Box(Modifier.align(Alignment.TopEnd).fillMaxHeight().fillMaxWidth(0.62f)) {
+                AsyncImage(backdrop, null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                // Fade into the page on the left and bottom, like TiviMate.
+                Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Brush.horizontalGradient(
+                    0f to bg, 0.45f to bg.copy(alpha = 0.55f), 1f to Color.Transparent)))
+                Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Brush.verticalGradient(
+                    0.6f to Color.Transparent, 1f to bg)))
+            }
+        }
+        Column(Modifier.fillMaxWidth(0.62f).padding(start = 28.dp, top = 22.dp, end = 12.dp)) {
+            val year = item.year ?: info?.year
+            Text(item.name + if (year != null && !item.name.contains("($year)")) " ($year)" else "",
+                fontSize = 26.sp, fontWeight = FontWeight.Bold, color = colors.onBackground,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
+                (item.rating ?: info?.rating)?.let { RatingBadge(it); Spacer(Modifier.width(10.dp)) }
+                val meta = listOfNotNull(year, info?.duration, info?.genre).joinToString("  •  ")
+                if (meta.isNotEmpty()) Text(meta, fontSize = 14.sp, color = colors.onBackground.copy(alpha = 0.75f),
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            info?.cast?.let { InfoLine("Cast", it) }
+            info?.director?.let { InfoLine("Director", it) }
+            (info?.plot ?: item.plot)?.let {
+                Text(it, fontSize = 14.sp, lineHeight = 19.sp, maxLines = 4, overflow = TextOverflow.Ellipsis,
+                    color = colors.onBackground.copy(alpha = 0.85f), modifier = Modifier.padding(top = 10.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun InfoLine(label: String, value: String) {
+    Text(
+        androidx.compose.ui.text.buildAnnotatedString {
+            pushStyle(androidx.compose.ui.text.SpanStyle(color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f)))
+            append("$label: "); pop(); append(value)
+        },
+        fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.9f), modifier = Modifier.padding(top = 6.dp),
+    )
+}
+
+/** Small colored score badge (green good, amber average, red poor). */
+@Composable
+private fun RatingBadge(rating: String, small: Boolean = false) {
+    val v = rating.replace(',', '.').toFloatOrNull()
+    val text = v?.let { if (it >= 10f) "%.0f".format(it) else "%.1f".format(it) } ?: rating.take(4)
+    val color = when {
+        v == null -> Color(0xFF607D8B)
+        v >= 7f -> Color(0xFF2E9E4F)
+        v >= 5f -> Color(0xFFE0A100)
+        else -> Color(0xFFD64541)
+    }
+    Box(Modifier.clip(RoundedCornerShape(4.dp)).background(color).padding(horizontal = if (small) 5.dp else 7.dp, vertical = 2.dp)) {
+        Text(text, fontSize = if (small) 11.sp else 13.sp, fontWeight = FontWeight.Bold, color = Color.White)
+    }
 }
 
 @Composable
@@ -146,17 +319,18 @@ private fun CenterText(text: String) {
 }
 
 @Composable
-private fun PosterCard(item: VodItem, onClick: () -> Unit) {
+private fun PosterCard(item: VodItem, onFocused: () -> Unit = {}, onClick: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
     val accent = if (LocalSelectionWhite.current) Color.White else MaterialTheme.colorScheme.primary
     Column(
         Modifier
-            .onFocusChanged { focused = it.isFocused }
+            .onFocusChanged { focused = it.isFocused; if (it.isFocused) onFocused() }
             .onPreviewKeyEvent { e ->
                 val ok = e.key == Key.DirectionCenter || e.key == Key.Enter || e.key == Key.NumPadEnter
                 if (ok && e.type == KeyEventType.KeyUp) { onClick(); true } else ok
             }
             .focusable()
+            .pointerInput(item.id) { detectTapGestures { onClick() } }
     ) {
         Box(
             Modifier.fillMaxWidth().aspectRatio(2f / 3f).clip(RoundedCornerShape(6.dp))
@@ -168,6 +342,7 @@ private fun PosterCard(item: VodItem, onClick: () -> Unit) {
                 modifier = Modifier.padding(8.dp), maxLines = 4)
             if (item.poster != null) AsyncImage(item.poster, contentDescription = item.name, contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize())
+            item.rating?.let { Box(Modifier.align(Alignment.TopStart).padding(6.dp)) { RatingBadge(it, small = true) } }
         }
         Text(item.name, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
             color = if (focused) MaterialTheme.colorScheme.onBackground else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
@@ -175,42 +350,75 @@ private fun PosterCard(item: VodItem, onClick: () -> Unit) {
     }
 }
 
-/** Movie details: poster, info and Play / Resume. */
+/** Movie details (TiviMate): backdrop, poster, rating, year • length • genre, cast, director, plot; Play / Resume / My list. */
 @Composable
 fun MovieDetailsScreen(item: VodItem, onPlay: (fromStart: Boolean) -> Unit) {
     val context = LocalContext.current
-    val resume = remember(item.id) { context.app.vod.resumePosition(item.id) }
+    val vod = context.app.vod
+    val resume = remember(item.id) { vod.resumePosition(item.id) }
+    val myIds by vod.myList.collectAsState()
     val fr = remember { FocusRequester() }
     DetailsLayout(item) {
         if (resume > 0) {
-            TvRow(modifier = Modifier.width(300.dp).focusRequester(fr), onClick = { onPlay(false) }) {
+            TvRow(modifier = Modifier.width(320.dp).focusRequester(fr), onClick = { onPlay(false) }) {
                 RowTitle("Resume", "from ${formatTime(resume)}")
             }
-            TvRow(modifier = Modifier.width(300.dp), onClick = { onPlay(true) }) { RowTitle("Play from the beginning") }
+            TvRow(modifier = Modifier.width(320.dp), onClick = { onPlay(true) }) { RowTitle("Play from the beginning") }
         } else {
-            TvRow(modifier = Modifier.width(300.dp).focusRequester(fr), onClick = { onPlay(true) }) { RowTitle("Play") }
+            TvRow(modifier = Modifier.width(320.dp).focusRequester(fr), onClick = { onPlay(true) }) { RowTitle("Play") }
         }
+        MyListRow(item, item.id in myIds)
     }
     AutoFocus(fr)
 }
 
 @Composable
+private fun MyListRow(item: VodItem, inList: Boolean, modifier: Modifier = Modifier.width(320.dp)) {
+    val vod = LocalContext.current.app.vod
+    TvRow(modifier = modifier, onClick = { vod.toggleMyList(item.id) }) {
+        RowTitle(if (inList) "Remove from My list" else "Add to My list")
+    }
+}
+
+@Composable
 private fun DetailsLayout(item: VodItem, actions: @Composable () -> Unit) {
-    Row(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(48.dp)) {
-        Box(Modifier.width(260.dp).aspectRatio(2f / 3f).clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant)) {
-            if (item.poster != null) AsyncImage(item.poster, null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-        }
-        Spacer(Modifier.width(40.dp))
-        Column(Modifier.weight(1f)) {
-            Text(item.name, fontSize = 32.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onBackground)
-            val meta = listOfNotNull(item.year, item.rating?.let { "★ $it" }, item.category).joinToString("  ·  ")
-            Text(meta, fontSize = 15.sp, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f), modifier = Modifier.padding(top = 6.dp))
-            item.plot?.let {
-                Text(it, fontSize = 15.sp, lineHeight = 21.sp, maxLines = 6, overflow = TextOverflow.Ellipsis,
-                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.85f), modifier = Modifier.padding(top = 14.dp))
+    val vod = LocalContext.current.app.vod
+    val colors = MaterialTheme.colorScheme
+    val info by produceState(vod.cachedInfo(item), item.id) { if (value == null) value = vod.info(item) }
+    val bg = colors.background
+    Box(Modifier.fillMaxSize().background(bg)) {
+        info?.backdrop?.let { b ->
+            Box(Modifier.align(Alignment.TopEnd).fillMaxWidth(0.7f).fillMaxHeight(0.75f)) {
+                AsyncImage(b, null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Brush.horizontalGradient(
+                    0f to bg, 0.5f to bg.copy(alpha = 0.6f), 1f to bg.copy(alpha = 0.15f))))
+                Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Brush.verticalGradient(
+                    0.5f to Color.Transparent, 1f to bg)))
             }
-            Spacer(Modifier.height(24.dp))
-            actions()
+        }
+        Row(Modifier.fillMaxSize().padding(48.dp)) {
+            Box(Modifier.width(240.dp).aspectRatio(2f / 3f).clip(RoundedCornerShape(8.dp)).background(colors.surfaceVariant)) {
+                if (item.poster != null) AsyncImage(item.poster, null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+            }
+            Spacer(Modifier.width(40.dp))
+            Column(Modifier.weight(1f)) {
+                val year = item.year ?: info?.year
+                Text(item.name + if (year != null && !item.name.contains("($year)")) " ($year)" else "",
+                    fontSize = 30.sp, fontWeight = FontWeight.Bold, color = colors.onBackground, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
+                    (item.rating ?: info?.rating)?.let { RatingBadge(it); Spacer(Modifier.width(10.dp)) }
+                    val meta = listOfNotNull(year, info?.duration, info?.genre ?: item.category).joinToString("  •  ")
+                    Text(meta, fontSize = 15.sp, color = colors.onBackground.copy(alpha = 0.75f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                info?.cast?.let { InfoLine("Cast", it) }
+                info?.director?.let { InfoLine("Director", it) }
+                (info?.plot ?: item.plot)?.let {
+                    Text(it, fontSize = 15.sp, lineHeight = 21.sp, maxLines = 5, overflow = TextOverflow.Ellipsis,
+                        color = colors.onBackground.copy(alpha = 0.85f), modifier = Modifier.padding(top = 12.dp))
+                }
+                Spacer(Modifier.height(22.dp))
+                actions()
+            }
         }
     }
 }
@@ -224,11 +432,21 @@ fun SeriesScreen(item: VodItem, onPlay: (List<Episode>, Int) -> Unit) {
     var season by remember { mutableIntStateOf(-1) }
     val fr = remember { FocusRequester() }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(40.dp)) {
-        Text(item.name, fontSize = 30.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onBackground)
-        item.plot?.let {
+        val info by produceState(vod.cachedInfo(item), item.id) { if (value == null) value = vod.info(item) }
+        val myIds by vod.myList.collectAsState()
+        Text(item.name, fontSize = 30.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 6.dp)) {
+            (item.rating ?: info?.rating)?.let { RatingBadge(it); Spacer(Modifier.width(10.dp)) }
+            val meta = listOfNotNull(item.year ?: info?.year, info?.duration, info?.genre ?: item.category).joinToString("  •  ")
+            Text(meta, fontSize = 14.sp, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.75f), maxLines = 1)
+        }
+        info?.cast?.let { InfoLine("Cast", it) }
+        info?.director?.let { InfoLine("Director", it) }
+        (info?.plot ?: item.plot)?.let {
             Text(it, fontSize = 14.sp, maxLines = 3, overflow = TextOverflow.Ellipsis,
                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.75f), modifier = Modifier.padding(top = 6.dp, bottom = 16.dp))
         }
+        val inMyList = item.id in myIds
         val r = episodes
         when {
             r == null -> CenterText("Loading episodes…")
@@ -246,6 +464,7 @@ fun SeriesScreen(item: VodItem, onPlay: (List<Episode>, Int) -> Unit) {
                                 Text("Season $s", fontSize = 16.sp, color = rowContentColor())
                             }
                         }
+                        this.item(key = "mylist") { MyListRow(item, inMyList, Modifier.fillMaxWidth()) }
                     }
                     Spacer(Modifier.width(24.dp))
                     val inSeason = list.filter { it.season == season }
