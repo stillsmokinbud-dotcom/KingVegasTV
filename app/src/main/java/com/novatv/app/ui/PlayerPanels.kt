@@ -337,12 +337,12 @@ internal fun PlayerChannelList(
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
-    BackHandler { if (groupsOpen) groupsOpen = false else onDismiss() }
     var list by remember { mutableStateOf(queue) }
     var title by remember { mutableStateOf(queue.getOrNull(current)?.group ?: "All channels") }
     var focusedIdx by remember { mutableIntStateOf(current.coerceAtLeast(0)) }
     var groupsOpen by remember { mutableStateOf(false) }
     var scheduleFor by remember { mutableStateOf<Channel?>(null) }
+    BackHandler { if (groupsOpen) groupsOpen = false else onDismiss() }
     val listFocus = remember { FocusRequester() }
     val groupFocus = remember { FocusRequester() }
     val state = rememberLazyListState(initialFirstVisibleItemIndex = (current - 4).coerceAtLeast(0))
