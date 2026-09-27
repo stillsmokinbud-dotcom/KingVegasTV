@@ -60,6 +60,15 @@ class App : Application() {
         reminders = com.novatv.app.premium.ReminderStore(this)
         recordings = com.novatv.app.premium.RecordingManager(this, playlists, appScope)
         com.novatv.app.boot.WakeAlarms.registerScreenOn(this)
+        // One time: put every remote button back to the TiviMate defaults (fixes remotes that only scrolled the guide).
+        appScope.launch {
+            val s = settings.current()
+            if (s.str("data.remote_reset_v1") != "done") {
+                com.novatv.app.settings.RemoteKeys.GUIDE_KEYS.forEach { settings.set(com.novatv.app.settings.RemoteKeys.guideKey(it.id), it.default) }
+                com.novatv.app.settings.RemoteKeys.PLAYER_KEYS.forEach { settings.set(com.novatv.app.settings.RemoteKeys.playerKey(it.id), it.default) }
+                settings.set("data.remote_reset_v1", "done")
+            }
+        }
         // Settings → TV guide → "Update when a playlist is updated"
         playlists.onChannelsUpdated = {
             if (settings.current().bool("epg.update_on_playlist_change")) appScope.launch { epg.update(skipIfNewerThanMs = 10 * 60_000L) }
