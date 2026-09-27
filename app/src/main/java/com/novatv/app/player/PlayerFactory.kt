@@ -133,6 +133,11 @@ class PlayerFactory(private val context: Context, private val baseHttp: OkHttpCl
         /** Players that were playing when the app left the screen, to start again when it comes back. */
         private val resumeLater = mutableListOf<ExoPlayer>()
 
+        /** The Playback settings a player is built with (a change means the shared player is rebuilt). */
+        fun signature(s: AppSettings): String = listOf("playback.buffer", "playback.decoder", "playback.audio_decoder",
+            "playback.passthrough", "playback.tunneling", "playback.surround", "playback.timeout", "playback.skip_short",
+            "playback.audio_lang", "playback.subtitle_lang", "playback.subtitles").joinToString("|") { s.str(it) }
+
         /** Call just before releasing a player. */
         fun forget(p: ExoPlayer) { all.remove(p); resumeLater.remove(p) }
 
