@@ -550,7 +550,7 @@ fun VodPlayerScreen(
         player.addListener(l)
         onDispose {
             com.novatv.app.player.Afr.reset(context as? android.app.Activity)
-            saveResume(); player.removeListener(l); player.release()
+            saveResume(); player.removeListener(l); PlayerFactory.forget(player); player.release()
         }
     }
     BackHandler { saveResume(); onExit() }
