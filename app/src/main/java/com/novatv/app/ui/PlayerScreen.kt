@@ -101,6 +101,7 @@ fun PlayerScreen(
     var aspect by remember { mutableStateOf(settings.str("playback.aspect")) }
     var sleepMinutes by remember { mutableIntStateOf(settings.str("playback.sleep_default").toIntOrNull() ?: 0) }
     var keyLongFired by remember { mutableStateOf(false) }
+    var downSeen by remember { mutableStateOf<String?>(null) }
     /** Channel shown by "Show info panel for next/previous channel" (OK switches to it). */
     var peekIndex by remember { mutableStateOf<Int?>(null) }
     var stopped by remember { mutableStateOf(false) }
@@ -339,6 +340,10 @@ fun PlayerScreen(
     fun mapped(id: String): String = if (settings.premium) settings.str(RemoteKeys.playerKey(id))
         else RemoteKeys.PLAYER_KEYS.first { it.id == id }.default
 
+    // Safety net: if the remote's Back ever arrives while nothing on the player has the focus,
+    // it still does what Remote control › Player › Back says (TiviMate default: back to the TV guide).
+    BackHandler(enabled = overlay == Overlay.NONE) { action(mapped("back")) }
+
     /** Remote control › Player: which key this is. */
     fun keyId(k: Key): String? = when (k) {
         Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> "ok"
@@ -400,6 +405,11 @@ fun PlayerScreen(
                     return@onKeyEvent true
                 }
                 if (id in longKeys) {
+                    // Ignore the rest of a press that started on another screen (e.g. Back held in the guide
+                    // to come here must not also trigger "Long Back" in the player).
+                    if (e.type == KeyEventType.KeyDown && e.nativeKeyEvent.repeatCount == 0) downSeen = id
+                    else if (downSeen != id) return@onKeyEvent true
+                    if (e.type == KeyEventType.KeyUp) downSeen = null
                     if (e.type == KeyEventType.KeyDown) {
                         if (e.nativeKeyEvent.repeatCount == 0) keyLongFired = false
                         else if (!keyLongFired) { keyLongFired = true; action(mapped(id + "_long")) }
