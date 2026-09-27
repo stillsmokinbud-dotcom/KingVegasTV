@@ -166,6 +166,16 @@ private fun AppRoot(settings: AppSettings, onFinish: () -> Unit) {
         }
     }
 
+    // The app closed by itself last time: show why (take a photo of it and send it over).
+    LaunchedEffect(Unit) {
+        val f = java.io.File(app.filesDir, "last_crash.txt")
+        if (f.exists()) {
+            val text = runCatching { f.readText().take(1800) }.getOrDefault("")
+            f.delete()
+            if (text.isNotBlank()) push(Screen.Info("The app closed unexpectedly last time", text))
+        }
+    }
+
     LaunchedEffect(Unit) {
         app.playlists.reloadFromCache()
         app.epg.loadCache()
