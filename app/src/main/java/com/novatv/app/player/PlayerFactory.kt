@@ -36,7 +36,21 @@ class PlayerFactory(private val context: Context, private val baseHttp: OkHttpCl
             .build()
         val dataSource = OkHttpDataSource.Factory(http).setUserAgent(userAgent)
 
-        val renderers = DefaultRenderersFactory(context)
+        // Settings › Playback › Audio passthrough: off = the device decodes Dolby/DTS itself (PCM out);
+        // on = the compressed audio goes to the TV / receiver when it supports it.
+        val passthrough = s.bool("playback.passthrough")
+        val renderers = object : DefaultRenderersFactory(context) {
+            override fun buildAudioSink(
+                context: Context, enableFloatOutput: Boolean, enableAudioTrackPlaybackParams: Boolean,
+            ): androidx.media3.exoplayer.audio.AudioSink? =
+                androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
+                    .setAudioCapabilities(
+                        if (passthrough) androidx.media3.exoplayer.audio.AudioCapabilities.getCapabilities(context)
+                        else androidx.media3.exoplayer.audio.AudioCapabilities.DEFAULT_AUDIO_CAPABILITIES)
+                    .setEnableFloatOutput(enableFloatOutput)
+                    .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+                    .build()
+        }
             .setEnableDecoderFallback(true)
             .setMediaCodecSelector(codecSelector(s.str("playback.decoder"), s.str("playback.audio_decoder")))
 
@@ -59,16 +73,15 @@ class PlayerFactory(private val context: Context, private val baseHttp: OkHttpCl
         val player = ExoPlayer.Builder(context, renderers)
             .setTrackSelector(trackSelector)
             .setLoadControl(loadControl(s.str("playback.buffer")))
+            // Settings › Playback › Skip steps (Rewind / Fast forward).
+            .setSeekBackIncrementMs(s.int("playback.skip_short").coerceAtLeast(1) * 1000L)
+            .setSeekForwardIncrementMs(s.int("playback.skip_short").coerceAtLeast(1) * 1000L)
             // DefaultDataSource: network streams through OkHttp, plus local files (recordings) and content:// links.
             .setMediaSourceFactory(DefaultMediaSourceFactory(androidx.media3.datasource.DefaultDataSource.Factory(context, dataSource), extractors()))
             .build()
 
-        // Auto frame rate: ask the display to match the video's frame rate when it can do so seamlessly.
-        // TODO: full display-mode switching (refresh-rate change with blank screen) for AFR "On".
-        player.setVideoChangeFrameRateStrategy(
-            if (s.effective("playback.afr_tv") != "true") C.VIDEO_CHANGE_FRAME_RATE_STRATEGY_OFF
-            else C.VIDEO_CHANGE_FRAME_RATE_STRATEGY_ONLY_IF_SEAMLESS
-        )
+        // Auto frame rate is done by [Afr] (display mode switching); the player itself doesn't change it.
+        player.setVideoChangeFrameRateStrategy(C.VIDEO_CHANGE_FRAME_RATE_STRATEGY_OFF)
 
         return Built(player, dataSource)
     }
