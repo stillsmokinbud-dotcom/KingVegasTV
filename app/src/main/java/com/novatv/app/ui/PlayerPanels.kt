@@ -78,11 +78,13 @@ private fun hms(ms: Long): String {
 }
 
 /** "HD", "FHD", "4K" plus frame rate and "5.1" style badges from what is actually playing. */
-private fun badges(player: ExoPlayer): List<String> {
+private fun badges(player: ExoPlayer, resolution: Boolean = false): List<String> {
     val v = player.videoFormat
     val a = player.audioFormat
     return buildList {
-        v?.height?.takeIf { it > 0 }?.let { h -> add(when { h >= 2000 -> "4K"; h >= 1000 -> "FHD"; h >= 700 -> "HD"; else -> "SD" }) }
+        // Info panel › "Show video resolution instead of labels": 1920x1080 instead of FHD.
+        if (resolution && v != null && v.width > 0) add("${v.width}x${v.height}")
+        else v?.height?.takeIf { it > 0 }?.let { h -> add(when { h >= 2000 -> "4K"; h >= 1000 -> "FHD"; h >= 700 -> "HD"; else -> "SD" }) }
         v?.frameRate?.takeIf { it > 0 }?.let { add("${Math.round(it)} FPS") }
         a?.channelCount?.takeIf { it > 0 }?.let { add(when (it) { 1 -> "MONO"; 2 -> "STEREO"; 6 -> "5.1"; 8 -> "7.1"; else -> "${it}CH" }) }
     }
@@ -145,6 +147,7 @@ internal fun PlayerInfoPanel(
     peek: Boolean,
     isPlaying: Boolean,
     recent: List<Channel>,
+    playlistName: String? = null,
     onAction: (String) -> Unit,
     onPlayRecent: (Channel) -> Unit,
 ) {
@@ -171,20 +174,37 @@ internal fun PlayerInfoPanel(
             .then(if (interactive) Modifier.onPreviewKeyEvent { if (it.type == KeyEventType.KeyDown) lastKey++; false }
                 .focusProperties { exit = { FocusRequester.Cancel } }.focusGroup() else Modifier)
     ) {
-        // Top corners: group and clock
-        Row(
+        // Top corners: playlist and group name, clock (Settings › Appearance › Player › Info panel)
+        val showGroup = settings.bool("player.info_playlist_group")
+        val showClock = settings.bool("appearance.show_clock_info")
+        if (showGroup || showClock) Row(
             Modifier.align(Alignment.TopCenter).fillMaxWidth()
                 .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.55f), Color.Transparent)))
                 .padding(horizontal = 28.dp, vertical = 14.dp)
         ) {
-            Text(channel.group, fontSize = 13.sp, color = PanelDim, modifier = Modifier.weight(1f), maxLines = 1)
-            Text(dateTimeText(now, settings, context), fontSize = 13.sp, color = PanelDim)
+            Text(if (showGroup) listOfNotNull(playlistName, channel.group).joinToString("  ·  ") else "",
+                fontSize = 13.sp, color = PanelDim, modifier = Modifier.weight(1f), maxLines = 1)
+            if (showClock) Text(if (settings.bool("player.info_date")) dateTimeText(now, settings, context) else timeText(now, settings, context),
+                fontSize = 13.sp, color = PanelDim)
         }
 
+        // Info panel › "Card style": a rounded card instead of the full-width band. When switching
+        // channels the panel sits at the top unless "Show info panel at the bottom" is on.
+        val card = settings.bool("player.info_card")
+        val atTop = !interactive && !settings.bool("player.info_bottom")
         Column(
-            Modifier.align(Alignment.BottomCenter).fillMaxWidth()
-                .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.6f), Color.Black.copy(alpha = 0.88f))))
-                .padding(start = 40.dp, end = 40.dp, top = 60.dp, bottom = if (interactive) 6.dp else 26.dp)
+            Modifier.align(if (atTop) Alignment.TopCenter else Alignment.BottomCenter).fillMaxWidth()
+                .then(
+                    if (card) Modifier.padding(horizontal = 40.dp, vertical = if (atTop) 48.dp else 24.dp)
+                        .clip(RoundedCornerShape(12.dp)).background(Color(0xE6101318))
+                        .padding(start = 24.dp, end = 24.dp, top = 18.dp, bottom = if (interactive) 6.dp else 18.dp)
+                    else if (atTop) Modifier
+                        .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.88f), Color.Black.copy(alpha = 0.6f), Color.Transparent)))
+                        .padding(start = 40.dp, end = 40.dp, top = 48.dp, bottom = 50.dp)
+                    else Modifier
+                        .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.6f), Color.Black.copy(alpha = 0.88f))))
+                        .padding(start = 40.dp, end = 40.dp, top = 60.dp, bottom = if (interactive) 6.dp else 26.dp)
+                )
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 ChannelLogo(settings, channel, 64.dp)
@@ -203,14 +223,15 @@ internal fun PlayerInfoPanel(
                         val num = channel.number?.let { "$it  " } ?: ""
                         Text(num + channel.name + if (peek) "   ·   OK to watch" else "", fontSize = 13.sp, color = PanelText,
                             maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        badges(player).forEach { Badge(it) }
+                        if (settings.bool("player.info_media")) badges(player, settings.bool("player.info_resolution")).forEach { Badge(it) }
                     }
                     if (nextProg != null) {
                         Text("${timeText(nextProg.start, settings, context)} — ${timeText(nextProg.end, settings, context)}   ${nextProg.title}",
                             fontSize = 13.sp, color = PanelDim, maxLines = 1, overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.padding(top = 3.dp))
                     }
-                    if (!interactive && nowProg != null && settings.bool("player.info_desc") && nowProg.desc.isNotBlank()) {
+                    val descNow = !interactive || !settings.bool("player.info_desc_switch_only")
+                    if (descNow && nowProg != null && settings.bool("player.info_desc") && nowProg.desc.isNotBlank()) {
                         Text(nowProg.desc, fontSize = 13.sp, color = PanelDim, maxLines = 2, overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.padding(top = 4.dp))
                     }
@@ -243,18 +264,23 @@ internal fun PlayerInfoPanel(
                             if (e.type == KeyEventType.KeyDown && e.key == Key.DirectionDown) { onAction("menu"); true } else false
                         },
                 ) {
-                    item {
+                    // History / Recent channels settings: "TV guide" and "History" buttons can be hidden.
+                    val showGuide = settings.bool("player.btn_guide")
+                    val showHistory = settings.bool("player.btn_history")
+                    if (showGuide) item {
                         Tile(I.GridView, "TV guide", Modifier.focusRequester(tilesFocus)) { onAction("guide") }
                     }
-                    item { Tile(I.History, "History") { onAction("history") } }
-                    item { Tile(I.Replay, "Restart") { onAction("restart") } }
+                    if (showHistory) item { Tile(I.History, "History", if (!showGuide) Modifier.focusRequester(tilesFocus) else Modifier) { onAction("history") } }
+                    item { Tile(I.Replay, "Restart", if (!showGuide && !showHistory) Modifier.focusRequester(tilesFocus) else Modifier) { onAction("restart") } }
                     item { Tile(I.FiberManualRecord, "Record") { onAction("record") } }
-                    itemsIndexed(recent.take(6)) { _, c ->
+                    itemsIndexed(recent.take(settings.int("general.recent_count").coerceAtLeast(1))) { _, c ->
                         val p = epg.at(c, now)
                         TvRow(modifier = Modifier.width(150.dp).height(64.dp), onClick = { onPlayRecent(c) }) {
                             Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp)) {
-                                Text(c.name, fontSize = 12.sp, fontWeight = FontWeight.Medium, color = rowContentColor(), maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis)
+                                // Recent channels › "Show channel names" (otherwise the logo).
+                                if (settings.bool("recent.show_names")) Text(c.name, fontSize = 12.sp, fontWeight = FontWeight.Medium,
+                                    color = rowContentColor(), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                else ChannelLogo(settings, c, 34.dp)
                                 Text(p?.title ?: "No information", fontSize = 11.sp, color = rowContentColor(dimmed = true), maxLines = 2,
                                     overflow = TextOverflow.Ellipsis)
                             }
@@ -331,16 +357,27 @@ internal fun PlayerChannelList(
     current: Int,
     epg: EpgData,
     favorites: List<String>,
-    onPick: (list: List<Channel>, index: Int) -> Unit,
+    /** "preview": opened in preview mode (the video shrinks to a window); "overlay": over the video. */
+    mode: String = "overlay",
+    startWithGroups: Boolean = false,
+    onPick: (list: List<Channel>, index: Int, stay: Boolean) -> Unit,
     onPlayArchive: (title: String, url: String) -> Unit,
     onLong: (Channel) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    // Settings › Appearance › Player › Channels list
+    val preview = mode == "preview"
+    val autoplay = settings.bool(if (preview) "player.preview_autoplay" else "player.overlay_autoplay")
+    val stay = settings.bool(if (preview) "player.preview_stay" else "player.overlay_stay")
+    val showPrograms = preview || settings.bool("player.overlay_show_programs")
+    val showDesc = preview || settings.bool("player.overlay_show_desc")
+    val highlightNow = settings.bool("player.list_highlight_current")
+    val dimPast = settings.bool("player.list_dim_past")
     val context = LocalContext.current
     var list by remember { mutableStateOf(queue) }
     var title by remember { mutableStateOf(queue.getOrNull(current)?.group ?: "All channels") }
     var focusedIdx by remember { mutableIntStateOf(current.coerceAtLeast(0)) }
-    var groupsOpen by remember { mutableStateOf(false) }
+    var groupsOpen by remember { mutableStateOf(startWithGroups) }
     var scheduleFor by remember { mutableStateOf<Channel?>(null) }
     BackHandler { if (groupsOpen) groupsOpen = false else onDismiss() }
     val listFocus = remember { FocusRequester() }
@@ -350,6 +387,13 @@ internal fun PlayerChannelList(
         value = withContext(Dispatchers.Default) { allChannels.map { it.group }.distinct() }
     }
     val focusedChannel = list.getOrNull(focusedIdx)
+    // Autoplay channels: the highlighted channel starts playing after a moment, the list stays open.
+    LaunchedEffect(focusedIdx, list) {
+        if (!autoplay) return@LaunchedEffect
+        if (list === queue && focusedIdx == current) return@LaunchedEffect
+        delay(600)
+        if (focusedIdx in list.indices) onPick(list, focusedIdx, true)
+    }
     val now = System.currentTimeMillis()
 
     Row(Modifier.fillMaxSize().focusProperties { exit = { FocusRequester.Cancel } }.focusGroup()) {
@@ -408,16 +452,16 @@ internal fun PlayerChannelList(
                             modifier = if (i == focusedIdx) Modifier.focusRequester(listFocus) else Modifier,
                             onFocused = { focusedIdx = i },
                             onLongClick = { onLong(ch) },
-                            onClick = { onPick(list, i) },
+                            onClick = { onPick(list, i, stay) },
                         ) {
                             ChannelLogo(settings, ch, 44.dp)
                             Spacer(Modifier.width(12.dp))
                             Column(Modifier.weight(1f).padding(vertical = 3.dp)) {
                                 Text((ch.number?.let { "$it  " } ?: "") + ch.name, fontSize = 15.sp, fontWeight = FontWeight.Bold,
                                     color = rowContentColor(), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Text(p?.title ?: "No information", fontSize = 13.sp, color = rowContentColor(dimmed = true), maxLines = 1,
+                                if (showPrograms) Text(p?.title ?: "No information", fontSize = 13.sp, color = rowContentColor(dimmed = true), maxLines = 1,
                                     overflow = TextOverflow.Ellipsis)
-                                if (p != null) ProgressBar((now - p.start).toFloat() / (p.end - p.start).coerceAtLeast(1),
+                                if (showPrograms && p != null) ProgressBar((now - p.start).toFloat() / (p.end - p.start).coerceAtLeast(1),
                                     Modifier.fillMaxWidth().padding(top = 4.dp))
                             }
                             if (ch.id in favorites) Text("★", color = Color(0xFFFFC107), fontSize = 12.sp, modifier = Modifier.padding(start = 6.dp))
@@ -430,7 +474,7 @@ internal fun PlayerChannelList(
             }
             // What's on the highlighted channel, in a card on the right
             val nowP = focusedChannel?.let { epg.at(it, now) }
-            if (nowP != null) ProgramCard(settings, nowP, now)
+            if (nowP != null && showDesc) ProgramCard(settings, nowP, now)
         } else {
             val ch = scheduleFor!!
             val progs = remember(ch.id, epg) {
@@ -475,15 +519,19 @@ internal fun PlayerChannelList(
                                             com.novatv.app.premium.Catchup.url(ch, p.start, p.end)?.let { onPlayArchive(p.title, it) }
                                         else -> {
                                             val idx = list.indexOf(ch)
-                                            if (idx >= 0) onPick(list, idx) else onPick(listOf(ch), 0)
+                                            if (idx >= 0) onPick(list, idx, stay) else onPick(listOf(ch), 0, stay)
                                         }
                                     }
                                 },
                             ) {
-                                Text(timeText(p.start, settings, context), fontSize = 14.sp, color = rowContentColor(dimmed = past),
+                                // Channels list › "Dim past programs" and "Highlight current programs in color".
+                                val dim = past && dimPast
+                                val nowColor = if (isNow && highlightNow && !LocalRowFocused.current)
+                                    androidx.compose.material3.MaterialTheme.colorScheme.primary else rowContentColor(dimmed = dim)
+                                Text(timeText(p.start, settings, context), fontSize = 14.sp, color = nowColor,
                                     modifier = Modifier.width(84.dp))
                                 Text(p.title, fontSize = 14.sp, fontWeight = if (isNow) FontWeight.Bold else FontWeight.Normal,
-                                    color = rowContentColor(dimmed = past), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                                    color = nowColor, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                                 if (isNow) Text("▶", fontSize = 11.sp, color = rowContentColor())
                                 if (past && ch.catchupDays > 0) Icon(I.History, null, tint = rowContentColor(true), modifier = Modifier.size(14.dp))
                             }
@@ -493,7 +541,7 @@ internal fun PlayerChannelList(
                     }
                 }
             }
-            focusedProg?.let { ProgramCard(settings, it, now) }
+            if (showDesc) focusedProg?.let { ProgramCard(settings, it, now) }
             LaunchedEffect(ch.id) { repeat(20) { if (runCatching { schedFocus.requestFocus() }.isSuccess) return@LaunchedEffect; delay(30) } }
         }
     }
