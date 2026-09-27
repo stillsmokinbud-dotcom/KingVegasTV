@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -103,6 +104,9 @@ fun PlayerScreen(
     /** Channel shown by "Show info panel for next/previous channel" (OK switches to it). */
     var peekIndex by remember { mutableStateOf<Int?>(null) }
     var stopped by remember { mutableStateOf(false) }
+    /** Channels list: "overlay" (over the video) or "preview" (video shrinks to a window), and groups first. */
+    var listMode by remember { mutableStateOf("overlay") }
+    var listGroups by remember { mutableStateOf(false) }
     var paywall by remember { mutableStateOf<String?>(null) }
     val favorites by remember(DataKeys.FAVORITES) { app.settings.listFlow(DataKeys.FAVORITES) }.collectAsState(initial = emptyList())
     val epg by app.epg.data.collectAsState()
@@ -139,6 +143,12 @@ fun PlayerScreen(
         val ua = channel.userAgent?.takeIf { it.isNotBlank() } ?: repo.userAgentFor(pl, settings)
         error = null
         retries = 0
+        // Settings › Playback › Use external player (For TV / For TV and VOD)
+        if (com.novatv.app.player.ExternalPlayer.wanted(settings, vod = false) &&
+            com.novatv.app.player.ExternalPlayer.open(context, PlayerFactory.viaUdpProxy(channel.url, settings), channel.name)) {
+            app.lastPlayedId = channel.id
+            onExit(); return@LaunchedEffect
+        }
         if (!app.shared.isPlaying(channel.id)) {
             built.dataSource.setUserAgent(ua)
             player.setMediaItem(PlayerFactory.mediaItem(PlayerFactory.viaUdpProxy(channel.url, settings)))
@@ -150,6 +160,11 @@ fun PlayerScreen(
         stopped = false
         bannerTick++
         app.lastPlayedId = channel.id
+        // Recent channels and History each have their own "Delay before adding" setting.
+        launch {
+            delay(settings.int("history.delay") * 1000L)
+            repo.addHistory(channel, epg.at(channel, System.currentTimeMillis()))
+        }
         delay(settings.int("recent.delay") * 1000L)
         repo.markWatched(channel)
     }
@@ -226,9 +241,14 @@ fun PlayerScreen(
             override fun onPlaybackStateChanged(state: Int) {
                 if (state == Player.STATE_READY) error = null
             }
+            // Settings › Playback › Auto frame rate
+            override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
+                com.novatv.app.player.Afr.apply(context as? android.app.Activity, settings, player.videoFormat, vod = false)
+            }
         }
         player.addListener(listener)
         onDispose {
+            com.novatv.app.player.Afr.reset(context as? android.app.Activity)
             player.removeListener(listener)
             // Not released: the guide preview keeps showing this channel.
         }
@@ -245,7 +265,11 @@ fun PlayerScreen(
         when (a) {
             "guide_overlay", "guide_preview" -> onExit()
             "guide_groups_overlay", "guide_groups_preview" -> { app.openGuideGroups = true; onExit() }
-            "channels_overlay", "channels_groups_overlay", "channels_preview", "channels_groups_preview" -> overlay = Overlay.CHANNELS
+            "channels_overlay", "channels_groups_overlay", "channels_preview", "channels_groups_preview" -> {
+                listMode = if (a.endsWith("preview")) "preview" else "overlay"
+                listGroups = a.contains("groups")
+                overlay = Overlay.CHANNELS
+            }
             "program_description" -> overlay = Overlay.DESCRIPTION
             "info_control" -> { bannerTick++; overlay = Overlay.CONTROL }
             "info" -> bannerTick++
@@ -359,6 +383,17 @@ fun PlayerScreen(
                     if (digit != null && settings.bool("remote.number_keys")) { numberBuffer += digit; return@onKeyEvent true }
                     return@onKeyEvent false
                 }
+                // Remote control › Seeking options: rewind the live stream through catch-up.
+                if (e.type == KeyEventType.KeyDown && channel.catchupDays > 0 && (
+                        (id == "rewind" && settings.bool("remote.seek_rw_live")) ||
+                        (id == "left" && settings.bool("remote.seek_left_live")) ||
+                        (id == "down" && settings.bool("remote.seek_down_live")))) {
+                    val now = System.currentTimeMillis()
+                    val back = maxOf(60_000L, settings.int("playback.skip_short") * 1000L)
+                    val prog = epg.at(channel, now)
+                    val url = com.novatv.app.premium.Catchup.url(channel, now - back, prog?.end?.takeIf { it > now } ?: (now + 3_600_000L))
+                    if (url != null) { playUrl("${channel.name} · ${prog?.title ?: "Catch-up"}", url); return@onKeyEvent true }
+                }
                 // OK while peeking at another channel's info turns that channel on.
                 if (id == "ok" && peekIndex != null) {
                     if (e.type == KeyEventType.KeyUp) { switchTo(peekIndex!!); peekIndex = null }
@@ -379,6 +414,22 @@ fun PlayerScreen(
             }
             .focusable()
     ) {
+        // Channels list in preview mode: the video shrinks into a window at the top right
+        // (Settings › Player › Channels list › Preview mode › Animated transition).
+        val previewList = overlay == Overlay.CHANNELS && listMode == "preview"
+        val shrink by androidx.compose.animation.core.animateFloatAsState(
+            if (previewList) 1f else 0f,
+            androidx.compose.animation.core.tween(if (settings.bool("player.preview_animated")) 220 else 0), label = "preview")
+        val blackOnSwitch = settings.bool("player.black_screen")
+        // TV guide › Preview › Animated transition: the video grows from the preview window to full screen.
+        val grow = remember {
+            androidx.compose.animation.core.Animatable(if (app.fromGuidePreview && settings.bool("guide.preview_animated")) 0f else 1f)
+                .also { app.fromGuidePreview = false }
+        }
+        LaunchedEffect(Unit) { grow.animateTo(1f, androidx.compose.animation.core.tween(260)) }
+        val screenW = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp.toFloat()
+        val screenH = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.toFloat()
+        val g = grow.value
         AndroidView(
             factory = { ctx ->
                 PlayerView(ctx).apply {
@@ -387,14 +438,22 @@ fun PlayerScreen(
                     keepScreenOn = true
                     isFocusable = false
                     descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
-                    setKeepContentOnPlayerReset(true)
+                    // Settings › Player › "Show black screen when switching channels"
+                    setKeepContentOnPlayerReset(!blackOnSwitch)
                     this.player = player
                 }
             },
-            update = { it.resizeMode = resizeModeFor(aspect) },
+            update = { it.resizeMode = resizeModeFor(aspect); it.setKeepContentOnPlayerReset(!blackOnSwitch) },
             onRelease = { it.player = null },
-            modifier = Modifier.fillMaxSize(),
+            modifier = if (g < 1f) Modifier.align(Alignment.TopStart)
+                .padding(start = (24 * (1 - g)).dp, top = (18 * (1 - g)).dp)
+                .width((356 + (screenW - 356) * g).dp).height((200 + (screenH - 200) * g).dp)
+            else Modifier.align(Alignment.TopEnd)
+                .padding(top = (40 * shrink).dp, end = (40 * shrink).dp)
+                .fillMaxWidth(1f - 0.55f * shrink).fillMaxHeight(1f - 0.55f * shrink),
         )
+        // Settings › Player › Clock (always on screen while watching)
+        if (settings.bool("appearance.show_clock") && overlay == Overlay.NONE && !bannerVisible) PlayerClock(settings)
 
         // TiviMate-style info panel: passive after a channel change, interactive (controls + tiles) on OK.
         if ((bannerVisible && overlay == Overlay.NONE) || overlay == Overlay.CONTROL) {
@@ -403,6 +462,7 @@ fun PlayerScreen(
                 settings = settings, channel = shownChannel, epg = epg, player = player,
                 interactive = overlay == Overlay.CONTROL, peek = peekIndex != null, isPlaying = player.isPlaying,
                 recent = recent.filter { it.id != channel.id },
+                playlistName = remember(shownChannel.playlistId, settings) { repo.playlistNameFor(shownChannel, settings) },
                 onAction = { a ->
                     when (a) {
                         "dismiss" -> overlay = Overlay.NONE
@@ -447,8 +507,9 @@ fun PlayerScreen(
         ) {
             PlayerChannelList(
                 settings = settings, allChannels = allChannels, queue = queue, current = index, epg = epg, favorites = favorites,
-                onPick = { list, i ->
-                    overlay = Overlay.NONE
+                mode = listMode, startWithGroups = listGroups,
+                onPick = { list, i, stay ->
+                    if (!stay) overlay = Overlay.NONE
                     if (list !== queue) {
                         queue = list; app.playQueue = list; previousIndex = null; index = i.coerceIn(list.indices)
                     } else switchTo(i)
@@ -711,4 +772,24 @@ private fun ControlPanel(isPlaying: Boolean, onDismiss: () -> Unit, onPick: (Str
         }
     }
     AutoFocus(fr)
+}
+
+/** Settings › Appearance › Player › Clock: position, size and transparency. */
+@Composable
+private fun PlayerClock(settings: AppSettings) {
+    val context = LocalContext.current
+    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) { while (true) { delay(5_000); now = System.currentTimeMillis() } }
+    val size = when (settings.str("player.clock_size")) { "small" -> 14; "large" -> 26; else -> 18 }
+    val alpha = when (settings.str("player.clock_transparency")) { "low" -> 0.75f; "medium" -> 0.5f; "high" -> 0.28f; else -> 1f }
+    val align = when (settings.str("player.clock_position")) {
+        "top_left" -> Alignment.TopStart; "bottom_left" -> Alignment.BottomStart; "bottom_right" -> Alignment.BottomEnd
+        else -> Alignment.TopEnd
+    }
+    Box(Modifier.fillMaxSize().padding(horizontal = 32.dp, vertical = 24.dp)) {
+        Text(timeText(now, settings, context), fontSize = size.sp, fontWeight = FontWeight.Medium,
+            color = Color.White.copy(alpha = alpha),
+            modifier = Modifier.align(align).clip(RoundedCornerShape(6.dp)).background(Color.Black.copy(alpha = 0.35f * alpha))
+                .padding(horizontal = 10.dp, vertical = 4.dp))
+    }
 }
