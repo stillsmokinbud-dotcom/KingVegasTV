@@ -43,6 +43,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -175,7 +176,15 @@ fun RowTitle(title: String, summary: String? = null, dim: Boolean = false, modif
  * Pages inside it (submenus, radio lists) replace each other; Back goes up one page.
  */
 @Composable
-fun SidePanel(title: String, width: Dp = 400.dp, content: @Composable () -> Unit) {
+fun SidePanel(
+    title: String,
+    // TiviMate's panel is a bit under 40% of the screen wide (≈ 365 dp on a TV).
+    width: Dp = 365.dp,
+    /** True = slide back out to the right, then call [onClosed] (TiviMate closes its panels the same way it opens them). */
+    closing: Boolean = false,
+    onClosed: () -> Unit = {},
+    content: @Composable () -> Unit,
+) {
     val colors = MaterialTheme.colorScheme
     // Slides in from the right once when the panel opens (drawn on the GPU layer: no re-layout per frame).
     val slide = remember { androidx.compose.animation.core.Animatable(1f) }
@@ -185,8 +194,14 @@ fun SidePanel(title: String, width: Dp = 400.dp, content: @Composable () -> Unit
         androidx.compose.runtime.withFrameNanos { }
         slide.animateTo(0f, androidx.compose.animation.core.tween(280, easing = androidx.compose.animation.core.FastOutSlowInEasing))
     }
+    LaunchedEffect(closing) {
+        if (!closing) return@LaunchedEffect
+        slide.animateTo(1f, androidx.compose.animation.core.tween(220, easing = androidx.compose.animation.core.FastOutLinearInEasing))
+        onClosed()
+    }
     // TiviMate: the screen behind stays visible (only lightly dimmed) and the panel is a lighter grey.
-    Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.18f))) {
+    // The dimming fades in and out with the slide (no sudden jump in brightness).
+    Box(Modifier.fillMaxSize().drawBehind { drawRect(Color.Black.copy(alpha = 0.18f * (1f - slide.value))) }) {
         Column(
             Modifier
                 .align(Alignment.CenterEnd)
