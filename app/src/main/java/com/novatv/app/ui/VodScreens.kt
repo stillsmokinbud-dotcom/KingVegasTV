@@ -320,7 +320,7 @@ private fun CenterText(text: String) {
 }
 
 @Composable
-private fun PosterCard(item: VodItem, onFocused: () -> Unit = {}, onClick: () -> Unit) {
+internal fun PosterCard(item: VodItem, onFocused: () -> Unit = {}, onClick: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
     val accent = if (LocalSelectionWhite.current) Color.White else MaterialTheme.colorScheme.primary
     Column(
