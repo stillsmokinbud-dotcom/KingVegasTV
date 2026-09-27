@@ -127,38 +127,37 @@ fun VodBrowseScreen(
     val allLabel = if (kind == VodKind.MOVIES) "All movies" else "All shows"
     val colors = MaterialTheme.colorScheme
     val hero = focusedItem?.takeIf { f -> shown.any { it.id == f.id } } ?: shown.firstOrNull()
+    var focusedIndex by remember(category) { mutableIntStateOf(0) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val catState = androidx.compose.foundation.lazy.rememberLazyListState()
+    val gridState = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
+    // A new category starts at its first poster.
+    LaunchedEffect(category) { runCatching { gridState.scrollToItem(0) } }
 
     Row(Modifier.fillMaxSize().background(colors.background)) {
         VodRail(current = if (kind == VodKind.MOVIES) MenuDest.MOVIES else MenuDest.SHOWS, onNavigate = { d ->
             if (d == MenuDest.MY_LIST) category = VOD_MY_LIST else onNavigate(d)
         })
-        // Categories
-        Column(Modifier.width(230.dp).fillMaxHeight().background(colors.surface).padding(horizontal = 8.dp, vertical = 12.dp)) {
-            Text(title, fontSize = 22.sp, fontWeight = FontWeight.Medium, color = colors.onSurface,
-                modifier = Modifier.padding(start = 12.dp, top = 8.dp, bottom = 10.dp))
-            LazyColumn {
+        // Categories (TiviMate): on the page itself, no heading or counts; moving over one shows it,
+        // and the list scrolls so the highlighted category stays in the same place.
+        Column(Modifier.width(240.dp).fillMaxHeight().padding(start = 10.dp, end = 10.dp, top = 36.dp)) {
+            LazyColumn(state = catState) {
                 val rows = listOf(
                     VOD_MY_LIST to "My list", HISTORY to "History",
                     ALL to allLabel, RECENT to "Recently added",
                 ) + categories.map { it to it }
                 itemsIndexed(rows) { i, (key, label) ->
-                    val count = when (key) {
-                        VOD_MY_LIST -> myIds.count { it in byId }
-                        HISTORY -> historyIds.count { it in byId }
-                        ALL -> all.size
-                        else -> null
-                    }
                     TvRow(
                         modifier = if (key == category) Modifier.focusRequester(listFocus) else Modifier,
                         selected = key == category,
-                        onFocused = { category = key },
+                        onFocused = {
+                            category = key
+                            scope.launch { runCatching { catState.animateScrollToItem((i - 4).coerceAtLeast(0)) } }
+                        },
                         onClick = { category = key },
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(label, fontSize = 14.sp, color = rowContentColor(), maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f))
-                            if (count != null) Text("%,d".format(count), fontSize = 13.sp, color = rowContentColor(dimmed = true))
-                        }
+                        Text(label, fontSize = 15.sp, color = rowContentColor(), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f))
                     }
                 }
             }
@@ -176,16 +175,32 @@ fun VodBrowseScreen(
                         HISTORY -> "Nothing watched yet."
                         else -> "Nothing here"
                     })
-                    else LazyVerticalGrid(
-                        // TiviMate: seven posters across for movies and shows.
-                        columns = GridCells.Fixed(7),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 16.dp, end = 16.dp, bottom = 20.dp, top = 4.dp),
-                        modifier = Modifier.fillMaxSize(),
-                    ) {
-                        itemsIndexed(shown, key = { _, it -> it.id }) { _, item ->
-                            PosterCard(item, onFocused = { focusedItem = item }) { onOpen(item) }
+                    else {
+                        // Category name on the left, "8 / 412" (where you are / how many) on the right.
+                        val label = when (category) {
+                            VOD_MY_LIST -> "My list"; HISTORY -> "History"; ALL -> allLabel; RECENT -> "Recently added"; else -> category
+                        }
+                        Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 20.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(label, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = colors.onBackground,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                            Text("${(focusedIndex + 1).coerceAtMost(shown.size)} / ${shown.size}", fontSize = 13.sp,
+                                color = colors.onBackground.copy(alpha = 0.75f))
+                        }
+                        LazyVerticalGrid(
+                            // TiviMate: seven posters across; the row you're on scrolls up to the top.
+                            state = gridState,
+                            columns = GridCells.Fixed(7),
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 16.dp, end = 16.dp, bottom = 300.dp, top = 2.dp),
+                            modifier = Modifier.fillMaxSize(),
+                        ) {
+                            itemsIndexed(shown, key = { i, it -> "$i:${it.id}" }) { i, item ->
+                                PosterCard(item, onFocused = {
+                                    focusedItem = item; focusedIndex = i
+                                    scope.launch { runCatching { gridState.animateScrollToItem(i / 7 * 7) } }
+                                }) { onOpen(item) }
+                            }
                         }
                     }
                 }
@@ -208,17 +223,25 @@ private fun VodRail(current: MenuDest, onNavigate: (MenuDest) -> Unit) {
         MenuDest.MY_LIST to androidx.compose.material.icons.Icons.Filled.BookmarkBorder,
         MenuDest.SETTINGS to androidx.compose.material.icons.Icons.Filled.Settings,
     )
+    var open by remember { mutableStateOf(false) }
+    val width by androidx.compose.animation.core.animateDpAsState(if (open) 200.dp else 64.dp,
+        androidx.compose.animation.core.tween(240), label = "rail")
     Column(
-        Modifier.width(64.dp).fillMaxHeight().background(colors.surfaceVariant).padding(vertical = 18.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
+        Modifier.width(width).fillMaxHeight().background(colors.surfaceVariant)
+            .onFocusChanged { open = it.hasFocus }
+            .padding(horizontal = 10.dp, vertical = 18.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
+        androidx.compose.foundation.Image(
+            androidx.compose.ui.res.painterResource(com.novatv.app.R.drawable.app_logo), contentDescription = null,
+            modifier = Modifier.padding(start = 6.dp, bottom = 22.dp).width(32.dp).height(32.dp).clip(RoundedCornerShape(8.dp)),
+        )
         items.forEach { (dest, icon) ->
             var focused by remember { mutableStateOf(false) }
             val active = dest == current
-            Box(
+            Row(
                 Modifier.padding(top = if (dest == MenuDest.SETTINGS) 24.dp else 0.dp)
-                    .width(44.dp).height(44.dp).clip(RoundedCornerShape(22.dp))
+                    .fillMaxWidth().height(44.dp).clip(RoundedCornerShape(22.dp))
                     .background(if (focused) Color.White else Color.Transparent)
                     .onFocusChanged { focused = it.isFocused }
                     .onPreviewKeyEvent { e ->
@@ -226,15 +249,18 @@ private fun VodRail(current: MenuDest, onNavigate: (MenuDest) -> Unit) {
                         if (ok && e.type == KeyEventType.KeyUp) { if (!active) onNavigate(dest); true } else ok
                     }
                     .focusable()
-                    .pointerInput(dest) { detectTapGestures { if (!active) onNavigate(dest) } },
-                contentAlignment = Alignment.Center,
+                    .pointerInput(dest) { detectTapGestures { if (!active) onNavigate(dest) } }
+                    .padding(start = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                androidx.compose.material3.Icon(icon, contentDescription = dest.label,
-                    tint = when {
-                        focused -> Color(0xFF16181C)
-                        active -> colors.primary
-                        else -> colors.onSurface.copy(alpha = 0.7f)
-                    })
+                val tint = when {
+                    focused -> Color(0xFF16181C)
+                    active -> colors.primary
+                    else -> colors.onSurface.copy(alpha = 0.7f)
+                }
+                androidx.compose.material3.Icon(icon, contentDescription = dest.label, tint = tint)
+                if (width > 120.dp) Text(if (dest == MenuDest.GUIDE) "TV" else dest.label, fontSize = 15.sp, color = tint, maxLines = 1,
+                    modifier = Modifier.padding(start = 16.dp))
             }
         }
     }
@@ -250,7 +276,7 @@ private fun VodHero(item: VodItem) {
         if (value == null) { delay(300); value = vod.info(item) } // don't hit the server for every poster you pass
     }
     val bg = colors.background
-    Box(Modifier.fillMaxWidth().height(210.dp)) {
+    Box(Modifier.fillMaxWidth().height(236.dp)) {
         val backdrop = info?.backdrop ?: item.poster
         if (backdrop != null) {
             Box(Modifier.align(Alignment.TopEnd).fillMaxHeight().fillMaxWidth(0.62f)) {
@@ -276,7 +302,7 @@ private fun VodHero(item: VodItem) {
             info?.cast?.let { InfoLine("Cast", it) }
             info?.director?.let { InfoLine("Director", it) }
             (info?.plot ?: item.plot)?.let {
-                Text(it, fontSize = 13.sp, lineHeight = 17.sp, maxLines = 3, overflow = TextOverflow.Ellipsis,
+                Text(it, fontSize = 13.sp, lineHeight = 17.sp, maxLines = 5, overflow = TextOverflow.Ellipsis,
                     color = colors.onBackground.copy(alpha = 0.85f), modifier = Modifier.padding(top = 8.dp))
             }
         }
@@ -300,12 +326,8 @@ private fun InfoLine(label: String, value: String) {
 private fun RatingBadge(rating: String, small: Boolean = false) {
     val v = rating.replace(',', '.').toFloatOrNull()
     val text = v?.let { if (it >= 10f) "%.0f".format(it) else "%.1f".format(it) } ?: rating.take(4)
-    val color = when {
-        v == null -> Color(0xFF607D8B)
-        v >= 7f -> Color(0xFF2E9E4F)
-        v >= 5f -> Color(0xFFE0A100)
-        else -> Color(0xFFD64541)
-    }
+    // TiviMate: a soft blue score on posters, a grey one next to the title.
+    val color = if (small) Color(0xFF4F7FD6).copy(alpha = 0.9f) else Color.White.copy(alpha = 0.22f)
     Box(Modifier.clip(RoundedCornerShape(4.dp)).background(color).padding(horizontal = if (small) 4.dp else 7.dp, vertical = if (small) 1.dp else 2.dp)) {
         Text(text, fontSize = if (small) 10.sp else 13.sp, fontWeight = FontWeight.Bold, color = Color.White)
     }
@@ -333,21 +355,27 @@ internal fun PosterCard(item: VodItem, onFocused: () -> Unit = {}, onClick: () -
             .focusable()
             .pointerInput(item.id) { detectTapGestures { onClick() } }
     ) {
-        Box(
-            Modifier.fillMaxWidth().aspectRatio(2f / 3f).clip(RoundedCornerShape(6.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant)
-                .then(if (focused) Modifier.border(2.dp, accent, RoundedCornerShape(6.dp)) else Modifier),
-            contentAlignment = Alignment.Center,
+        // TiviMate's card: the poster with its score in the bottom-left corner, and the title in a strip
+        // underneath; the whole card lights up white when it's selected.
+        Column(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp))
+                .background(if (focused) Color.White else Color.White.copy(alpha = 0.08f))
+                .then(if (focused) Modifier.border(2.dp, accent, RoundedCornerShape(6.dp)) else Modifier)
         ) {
-            Text(item.name, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                modifier = Modifier.padding(8.dp), maxLines = 4)
-            if (item.poster != null) AsyncImage(item.poster, contentDescription = item.name, contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize())
-            item.rating?.let { Box(Modifier.align(Alignment.TopStart).padding(4.dp)) { RatingBadge(it, small = true) } }
+            Box(Modifier.fillMaxWidth().aspectRatio(2f / 3f).background(MaterialTheme.colorScheme.surfaceVariant),
+                contentAlignment = Alignment.Center) {
+                Text(item.name, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                    modifier = Modifier.padding(8.dp), maxLines = 4)
+                if (item.poster != null) AsyncImage(item.poster, contentDescription = item.name, contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize())
+                item.rating?.takeIf { r -> (r.replace(',', '.').toFloatOrNull() ?: 0f) > 0f }?.let {
+                    Box(Modifier.align(Alignment.BottomStart).padding(5.dp)) { RatingBadge(it, small = true) }
+                }
+            }
+            Text(item.name, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                color = if (focused) Color(0xFF16181C) else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.85f),
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp))
         }
-        Text(item.name, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-            color = if (focused) MaterialTheme.colorScheme.onBackground else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
-            modifier = Modifier.padding(top = 4.dp))
     }
 }
 
