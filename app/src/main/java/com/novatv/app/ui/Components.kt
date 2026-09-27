@@ -182,7 +182,7 @@ fun RowTitle(title: String, summary: String? = null, dim: Boolean = false, modif
 fun SidePanel(
     title: String,
     // TiviMate's settings panel: about a third of the screen wide, with compact rows.
-    width: Dp = 330.dp,
+    width: Dp = 290.dp,
     /** True = slide back out to the right, then call [onClosed] (TiviMate closes its panels the same way it opens them). */
     closing: Boolean = false,
     onClosed: () -> Unit = {},
