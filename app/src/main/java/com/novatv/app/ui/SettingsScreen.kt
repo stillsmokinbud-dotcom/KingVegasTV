@@ -158,11 +158,16 @@ fun SettingsScreen(
 
     fun runAction(action: SettingAction) {
         when (action) {
-            SettingAction.REFRESH_ALL_PLAYLISTS -> scope.launch {
-                message = "Update all playlists" to "Updating…"
-                message = updateResultMessage(playlists.refresh())
-                // Movies and shows too (runs in the background; the counts update when done).
-                app.appScope.launch { runCatching { app.vod.refresh() } }
+            // TiviMate: no pop-up; the row spins while updating and then says how it went.
+            SettingAction.REFRESH_ALL_PLAYLISTS -> if (!app.playlistsUpdating.value) app.appScope.launch {
+                app.playlistsUpdating.value = true
+                app.playlistsUpdateNote.value = null
+                val r = runCatching { playlists.refresh() }.getOrElse { Result.failure(it) }
+                // Movies and shows too, so the counts on the playlist are right.
+                runCatching { app.vod.refresh() }
+                app.playlistsUpdating.value = false
+                app.playlistsUpdateNote.value = if (r.isSuccess) "The playlists are successfully updated"
+                    else "Failed to update: " + (r.exceptionOrNull()?.message ?: "check your internet connection")
             }
             SettingAction.MANAGE_EPG_SOURCES -> push(Page.Custom("epg_sources", "EPG sources"))
             SettingAction.CLEAR_EPG_CACHE -> { app.epg.clear(); message = "Clear EPG" to "EPG cleared." }
@@ -368,11 +373,14 @@ private fun LazyListScope.renderItems(
 private fun SchemaRow(item: SettingItem, s: AppSettings, modifier: Modifier, onFocused: () -> Unit, onClick: () -> Unit) {
     val locked = item.premium && !s.premium
     val title = if (item is ToggleItem && item.stateTitle) (if (s.bool(item.key)) "On" else "Off") else item.title
+    val updating = item.key == "playlists.refresh_all" && LocalContext.current.app.playlistsUpdating.value
     PanelRow(
         title = title,
         value = summaryFor(item, s),
         switch = (item as? ToggleItem)?.let { s.bool(it.key) },
         locked = locked,
+        leading = if (updating) { { androidx.compose.material3.CircularProgressIndicator(
+            modifier = Modifier.size(22.dp), strokeWidth = 2.dp, color = rowContentColor()) } } else null,
         modifier = modifier,
         onFocused = onFocused,
         onClick = onClick,
@@ -411,6 +419,7 @@ private fun summaryFor(item: SettingItem, s: AppSettings): String? {
             }
             "about.device" -> context.app.license.deviceName()
             "about.version" -> "${BuildConfig.VERSION_NAME} (${if (s.premium) "Premium" else "Free"})"
+            "playlists.refresh_all" -> context.app.playlistsUpdateNote.value
             else -> item.summary
         }
         else -> item.summary
