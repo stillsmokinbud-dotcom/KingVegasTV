@@ -23,6 +23,8 @@ object DataKeys {
     const val LOCKED_GROUPS = "data.locked_groups"
     const val FAVORITES = "data.favorites"
     const val RECENT = "data.recent"
+    const val HISTORY = "data.history"
+    const val SEARCH_HISTORY = "data.search_history"
     const val LAST_CHANNEL = "data.last_channel"
     const val MENU_ORDER = "data.menu_order"
     const val LAST_GROUP = "data.last_group"
