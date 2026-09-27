@@ -32,6 +32,8 @@ object VideoStage {
     val resizeMode = mutableStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT)
     val keepContent = mutableStateOf(true)
     val keepScreenOn = mutableStateOf(false)
+    /** The see-through window the guide leaves for its preview (set as soon as the guide is laid out). */
+    val guideHole = mutableStateOf<Rect?>(null)
     /** The guide preview's last position: the full-screen player grows out of it. */
     @Volatile var lastPreview: Rect? = null
     private var owner = 0
