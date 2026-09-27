@@ -79,6 +79,8 @@ fun PlayerScreen(
     onExit: () -> Unit,
     onNavigate: (MenuDest) -> Unit = {},
     onFinishApp: () -> Unit = {},
+    /** The TV guide is right underneath (Back returns to it); otherwise "TV guide" goes there directly. */
+    canExitToGuide: Boolean = true,
 ) {
     val context = LocalContext.current
     val app = context.app
@@ -99,7 +101,13 @@ fun PlayerScreen(
     var error by remember { mutableStateOf<String?>(null) }
     var retries by remember { mutableIntStateOf(0) }
     var aspect by remember { mutableStateOf(settings.str("playback.aspect")) }
-    var sleepMinutes by remember { mutableIntStateOf(settings.str("playback.sleep_default").toIntOrNull() ?: 0) }
+    // Sleep timer: an app-wide deadline (keeps counting in the guide too); when it's up the app closes.
+    var sleepMinutes by remember {
+        val def = settings.str("playback.sleep_default").toIntOrNull() ?: 0
+        if (app.sleepAt == 0L && def > 0) app.sleepAt = System.currentTimeMillis() + def * 60_000L
+        mutableIntStateOf(if (app.sleepAt > 0L) ((app.sleepAt - System.currentTimeMillis()) / 60_000L).toInt().coerceAtLeast(1) else 0)
+    }
+    var isPlaying by remember { mutableStateOf(false) }
     var keyLongFired by remember { mutableStateOf(false) }
     var downSeen by remember { mutableStateOf<String?>(null) }
     /** Channel shown by "Show info panel for next/previous channel" (OK switches to it). */
@@ -120,7 +128,7 @@ fun PlayerScreen(
     }
 
     // Shared with the guide preview: Back to the guide keeps the same stream playing (TiviMate).
-    val built = remember { app.shared.obtain(settings) }
+    val built = remember(PlayerFactory.signature(settings)) { app.shared.obtain(settings) }
     DisposableEffect(Unit) { app.shared.attach(); onDispose { app.shared.detach() } }
     val player = built.player
     val channel = queue[index.coerceIn(queue.indices)]
@@ -188,20 +196,27 @@ fun PlayerScreen(
     // Number-key channel entry
     LaunchedEffect(numberBuffer) {
         if (numberBuffer.isEmpty()) return@LaunchedEffect
-        delay(settings.int("remote.number_delay") * 1000L)
+        delay(settings.int("remote.number_delay").coerceAtLeast(1) * 1000L)
         val n = numberBuffer.toIntOrNull()
-        // Channel number first; playlists without numbers use the position in the list (1 = first).
-        val target = queue.indexOfFirst { it.number == n }.takeIf { it >= 0 }
-            ?: n?.minus(1)?.takeIf { it in queue.indices }
-        if (target != null) switchTo(target)
         numberBuffer = ""
+        if (n == null) return@LaunchedEffect
+        // Channel number: in this group first, then in all channels; playlists without numbers use the
+        // position in the list (1 = first).
+        val inQueue = queue.indexOfFirst { it.number == n }
+        val inAll = if (inQueue < 0) allChannels.indexOfFirst { it.number == n } else -1
+        when {
+            inQueue >= 0 -> switchTo(inQueue)
+            inAll >= 0 -> { previousIndex = null; queue = allChannels; app.playQueue = allChannels; index = inAll }
+            (n - 1) in queue.indices -> switchTo(n - 1)
+        }
     }
 
-    // Sleep timer
+    // Sleep timer (checked here while watching, and app-wide in MainActivity)
     LaunchedEffect(sleepMinutes) {
-        if (sleepMinutes > 0) {
-            delay(sleepMinutes * 60_000L)
-            onExit()
+        while (app.sleepAt > 0L) {
+            val left = app.sleepAt - System.currentTimeMillis()
+            if (left <= 0L) { app.sleepAt = 0L; player.playWhenReady = false; onFinishApp(); break }
+            delay(minOf(left, 30_000L))
         }
     }
 
@@ -216,12 +231,14 @@ fun PlayerScreen(
             override fun onPlaybackStateChanged(state: Int) {
                 if (state == Player.STATE_READY) error = null
             }
+            override fun onIsPlayingChanged(playing: Boolean) { isPlaying = playing }
             // Settings › Playback › Auto frame rate
             override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
                 com.novatv.app.player.Afr.apply(context as? android.app.Activity, settings, player.videoFormat, vod = false)
             }
         }
         player.addListener(listener)
+        isPlaying = player.isPlaying
         onDispose {
             com.novatv.app.player.Afr.reset(context as? android.app.Activity)
             player.removeListener(listener)
@@ -238,7 +255,8 @@ fun PlayerScreen(
     fun action(a: String) {
         fun premiumOr(feature: String, block: () -> Unit) { if (settings.premium) block() else paywall = feature }
         when (a) {
-            "guide_overlay", "guide_preview" -> onExit()
+            // Back to the TV guide (even when the player was opened from History or Search).
+            "guide_overlay", "guide_preview" -> if (canExitToGuide) onExit() else onNavigate(MenuDest.GUIDE)
             "guide_groups_overlay", "guide_groups_preview" -> { app.openGuideGroups = true; onExit() }
             "channels_overlay", "channels_groups_overlay", "channels_preview", "channels_groups_preview" -> {
                 listMode = if (a.endsWith("preview")) "preview" else "overlay"
@@ -252,14 +270,21 @@ fun PlayerScreen(
             "menu" -> overlay = Overlay.MENU
             "next_channel" -> switchTo(index + 1)
             "prev_channel" -> switchTo(index - 1)
-            "recent_channel" -> previousIndex?.let { switchTo(it) }
+            // The channel watched before this one (from Recent channels, also right after opening the player).
+            "recent_channel" -> recent.firstOrNull { it.id != channel.id }?.let { c ->
+                val i = queue.indexOfFirst { it.id == c.id }
+                if (i >= 0) switchTo(i)
+                else allChannels.indexOfFirst { it.id == c.id }.takeIf { it >= 0 }?.let { j ->
+                    previousIndex = null; queue = allChannels; app.playQueue = allChannels; index = j
+                }
+            }
             "info_next" -> { peekIndex = (((peekIndex ?: index) + 1) % queue.size); bannerTick++ }
             "info_prev" -> { peekIndex = (((peekIndex ?: index) - 1 + queue.size) % queue.size); bannerTick++ }
             "volume_up" -> audio.adjustStreamVolume(android.media.AudioManager.STREAM_MUSIC, android.media.AudioManager.ADJUST_RAISE, android.media.AudioManager.FLAG_SHOW_UI)
             "volume_down" -> audio.adjustStreamVolume(android.media.AudioManager.STREAM_MUSIC, android.media.AudioManager.ADJUST_LOWER, android.media.AudioManager.FLAG_SHOW_UI)
             "volume_mute" -> audio.adjustStreamVolume(android.media.AudioManager.STREAM_MUSIC, android.media.AudioManager.ADJUST_TOGGLE_MUTE, android.media.AudioManager.FLAG_SHOW_UI)
-            "play_pause" -> if (stopped) { stopped = false; player.prepare(); player.play() } else player.playWhenReady = !player.playWhenReady
-            "stop" -> { player.stop(); stopped = true; error = "Stopped · press Play to resume" }
+            "play_pause" -> if (stopped) { stopped = false; error = null; player.prepare(); player.play() } else player.playWhenReady = !player.playWhenReady
+            "stop" -> { player.playWhenReady = false; player.stop(); stopped = true; error = "Stopped · press Play to resume" }
             "restart" -> premiumOr("Catch-up") {
                 val prog = epg.at(channel, System.currentTimeMillis())
                 val url = prog?.let { com.novatv.app.premium.Catchup.url(channel, it.start, it.end) }
@@ -362,6 +387,11 @@ fun PlayerScreen(
                     if (digit != null && settings.bool("remote.number_keys")) { numberBuffer += digit; return@onKeyEvent true }
                     return@onKeyEvent false
                 }
+                // Volume keys doing volume: leave them to the system, so the TV's own volume (HDMI-CEC) works.
+                if (id == "vol_up" || id == "vol_down" || id == "mute") {
+                    val m = mapped(id)
+                    if (m == "volume_up" || m == "volume_down" || m == "volume_mute") return@onKeyEvent false
+                }
                 // Remote control › Seeking options: rewind the live stream through catch-up.
                 if (e.type == KeyEventType.KeyDown && channel.catchupDays > 0 && (
                         (id == "rewind" && settings.bool("remote.seek_rw_live")) ||
@@ -427,9 +457,15 @@ fun PlayerScreen(
             val m = with(dens) { (40 * shrink).dp.toPx() }
             androidx.compose.ui.geometry.Rect(fullW - fullW * k - m, m, fullW - m, m + fullH * k)
         }
-        val token = remember { com.novatv.app.ui.VideoStage.claim(target) }
+        // Display mode 16:9 / 4:3: the picture is boxed to that shape (and stretched to fill it).
+        fun forced(r: androidx.compose.ui.geometry.Rect, ar: Float): androidx.compose.ui.geometry.Rect {
+            val w = minOf(r.width, r.height * ar); val h = w / ar
+            return androidx.compose.ui.geometry.Rect(r.center.x - w / 2, r.center.y - h / 2, r.center.x + w / 2, r.center.y + h / 2)
+        }
+        val shown = when (aspect) { "16_9" -> forced(target, 16f / 9f); "4_3" -> forced(target, 4f / 3f); else -> target }
+        val token = remember { com.novatv.app.ui.VideoStage.claim(shown) }
         androidx.compose.runtime.SideEffect {
-            com.novatv.app.ui.VideoStage.move(token, target)
+            com.novatv.app.ui.VideoStage.move(token, shown)
             com.novatv.app.ui.VideoStage.resizeMode.value = resizeModeFor(aspect)
             // Settings › Player › "Show black screen when switching channels"
             com.novatv.app.ui.VideoStage.keepContent.value = !blackOnSwitch
@@ -451,13 +487,13 @@ fun PlayerScreen(
             val shownChannel = peekIndex?.let { queue.getOrNull(it) } ?: channel
             PlayerInfoPanel(
                 settings = settings, channel = shownChannel, epg = epg, player = player,
-                interactive = overlay == Overlay.CONTROL, peek = peekIndex != null, isPlaying = player.isPlaying,
+                interactive = overlay == Overlay.CONTROL, peek = peekIndex != null, isPlaying = isPlaying,
                 recent = recent.filter { it.id != channel.id },
                 playlistName = remember(shownChannel.playlistId, settings) { repo.playlistNameFor(shownChannel, settings) },
                 onAction = { a ->
                     when (a) {
                         "dismiss" -> overlay = Overlay.NONE
-                        "guide" -> { overlay = Overlay.NONE; onExit() }
+                        "guide" -> { overlay = Overlay.NONE; action("guide_overlay") }
                         "history" -> { overlay = Overlay.NONE; onNavigate(MenuDest.HISTORY) }
                         "clear_history" -> scope.launch { app.settings.setList(DataKeys.RECENT, listOf(channel.id)) }
                         "prev" -> switchTo(index - 1)
@@ -474,7 +510,10 @@ fun PlayerScreen(
                 onPlayRecent = { c ->
                     overlay = Overlay.NONE
                     val i = queue.indexOfFirst { it.id == c.id }
-                    if (i >= 0) switchTo(i) else { queue = allChannels; switchTo(allChannels.indexOfFirst { it.id == c.id }.coerceAtLeast(0)) }
+                    if (i >= 0) switchTo(i) else {
+                        previousIndex = null; queue = allChannels; app.playQueue = allChannels
+                        index = allChannels.indexOfFirst { it.id == c.id }.coerceAtLeast(0)
+                    }
                 },
             )
         }
@@ -531,7 +570,7 @@ fun PlayerScreen(
             val savedOrder by remember(DataKeys.MENU_ORDER) { app.settings.listFlow(DataKeys.MENU_ORDER) }.collectAsState(initial = emptyList())
             val ids = PLAYER_MENU_BUTTONS.map { it.first }
             val order = savedOrder.filter { it in ids } + ids.filter { it !in savedOrder }
-            val buttons = order.filter { settings.bool("player.btn.$it") }.map { id ->
+            val buttons = order.filter { it != "audio_offset" && settings.bool("player.btn.$it") }.map { id ->
                 id to (labels[id] ?: PLAYER_MENU_BUTTONS.first { it.first == id }.second)
             }
             PlayerMenuRow(buttons, ::menuButtonIcon, header = channel.group to dateTimeText(System.currentTimeMillis(), settings, context),
@@ -556,23 +595,32 @@ fun PlayerScreen(
         Overlay.CAPTIONS -> {
             val off = player.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)
             ChoiceDialog("Closed captions", listOf("off" to "Off", "on" to "On"), if (off) "off" else "on", { overlay = Overlay.NONE }) {
-                player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
-                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, it == "off").build()
+                val b = player.trackSelectionParameters.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, it == "off")
+                if (it == "on") {
+                    // IPTV caption tracks are rarely marked "default", so choose the first one that can be shown.
+                    b.setSelectUndeterminedTextLanguage(true)
+                    player.currentTracks.groups.firstOrNull { g -> g.type == C.TRACK_TYPE_TEXT && g.isTrackSupported(0) }
+                        ?.let { g -> b.setOverrideForType(TrackSelectionOverride(g.mediaTrackGroup, 0)) }
+                } else b.clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                player.trackSelectionParameters = b.build()
+                val none = it == "on" && player.currentTracks.groups.none { g -> g.type == C.TRACK_TYPE_TEXT }
+                if (none) { error = "This channel has no captions"; scope.launch { delay(2500); if (error == "This channel has no captions") error = null } }
                 overlay = Overlay.NONE
             }
         }
         Overlay.OFFSET -> MessageDialog("Audio offset", "Audio offset adjustment is coming in a later update.") { overlay = Overlay.NONE }
         Overlay.AUDIO -> {
             val groups = player.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+            val current = groups.withIndex().firstNotNullOfOrNull { (gi, g) -> (0 until g.length).firstOrNull { g.isTrackSelected(it) }?.let { "$gi:$it" } }
             val options = groups.flatMapIndexed { gi, g ->
-                (0 until g.length).map { ti ->
+                (0 until g.length).filter { g.isTrackSupported(it) }.map { ti ->
                     val f = g.getTrackFormat(ti)
                     "$gi:$ti" to listOfNotNull(f.language?.uppercase(), f.label, f.sampleMimeType?.substringAfter('/'),
                         if (f.channelCount > 0) "${f.channelCount}ch" else null).joinToString(" · ").ifBlank { "Track ${ti + 1}" }
                 }
             }
-            if (options.isEmpty()) MessageDialog("Audio track", "This channel has only one audio track.") { overlay = Overlay.NONE }
-            else ChoiceDialog("Audio track", options, null, { overlay = Overlay.NONE }) { v ->
+            if (options.size <= 1) MessageDialog("Audio track", if (options.isEmpty()) "No audio track" else "This channel has only one audio track.") { overlay = Overlay.NONE }
+            else ChoiceDialog("Audio track", options, current, { overlay = Overlay.NONE }) { v ->
                 val (gi, ti) = v.split(':').map { it.toInt() }
                 player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
                     .setOverrideForType(TrackSelectionOverride(groups[gi].mediaTrackGroup, ti)).build()
@@ -581,11 +629,18 @@ fun PlayerScreen(
         }
         Overlay.ASPECT -> ChoiceDialog("Aspect ratio",
             listOf("fit" to "Fit", "fill" to "Stretch", "zoom" to "Zoom (crop)", "16_9" to "16:9", "4_3" to "4:3"),
-            aspect, { overlay = Overlay.NONE }) { aspect = it; overlay = Overlay.NONE }
+            aspect, { overlay = Overlay.NONE }) {
+                aspect = it; overlay = Overlay.NONE
+                scope.launch { app.settings.set("playback.aspect", it) } // remembered for next time
+            }
         Overlay.SLEEP -> ChoiceDialog("Sleep timer",
             listOf("0" to "Off", "15" to "15 min", "30" to "30 min", "60" to "1 hour", "90" to "90 min",
                 "120" to "2 hours", "240" to "4 hours"),
-            sleepMinutes.toString(), { overlay = Overlay.NONE }) { sleepMinutes = it.toInt(); overlay = Overlay.NONE }
+            sleepMinutes.toString().takeIf { it in setOf("0", "15", "30", "60", "90", "120", "240") }, { overlay = Overlay.NONE }) {
+                val m = it.toInt()
+                app.sleepAt = if (m > 0) System.currentTimeMillis() + m * 60_000L else 0L
+                sleepMinutes = m; overlay = Overlay.NONE
+            }
         Overlay.INFO -> {
             val v = player.videoFormat
             val a = player.audioFormat
@@ -665,9 +720,10 @@ private fun ChannelListOverlay(
 }
 
 private fun resizeModeFor(aspect: String): Int = when (aspect) {
-    "fill" -> AspectRatioFrameLayout.RESIZE_MODE_FILL
+    // 16:9 and 4:3: the picture area itself is boxed to that shape, and the video fills it.
+    "fill", "16_9", "4_3" -> AspectRatioFrameLayout.RESIZE_MODE_FILL
     "zoom" -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-    else -> AspectRatioFrameLayout.RESIZE_MODE_FIT // TODO: forced 16:9 / 4:3
+    else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
 }
 
 internal fun digitOf(key: Key): Char? = when (key) {
