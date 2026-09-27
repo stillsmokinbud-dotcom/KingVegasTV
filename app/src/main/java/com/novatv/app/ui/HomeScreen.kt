@@ -176,6 +176,9 @@ fun GuideScreen(
     var drawerOpen by remember { mutableStateOf(app.openGuideGroups.also { app.openGuideGroups = false }) }
     var drawerOnMenu by remember { mutableStateOf(false) } // Back opens the drawer on the main menu, Left on the groups
     var railFocused by remember { mutableStateOf(false) }
+    var railFocusRequest by remember { mutableIntStateOf(0) } // bump to move the remote onto the side menu
+    var backLongFired by remember { mutableStateOf(false) }
+    var backDownSeen by remember { mutableStateOf(false) }
     var numberBuffer by remember { mutableStateOf("") }
     var keyLongFired by remember { mutableStateOf(false) }
     var okLongFired by remember { mutableStateOf(false) }
@@ -340,8 +343,8 @@ fun GuideScreen(
         val onNow = channel?.let { cellAt(it, focusTime).let { cell -> cell.start <= nowT && cell.end > nowT } } ?: true
         val scrolled = onChannelCol || !onNow || windowStart != nowT / HALF_HOUR * HALF_HOUR
         when {
-            // Back on the groups closes them (TiviMate); Back on the main menu twice exits.
-            drawerOpen && !railFocused -> drawerOpen = false
+            // Back on the groups opens the menu (second slider); Back on the menu exits (twice).
+            drawerOpen && !railFocused -> railFocusRequest++
             drawerOpen -> {
                 val now = System.currentTimeMillis()
                 if (now - lastBackInMenu < 2500) (context as? android.app.Activity)?.finish()
@@ -476,6 +479,21 @@ fun GuideScreen(
             .focusRequester(rootFocus)
             .onKeyEvent { e ->
                 lastInput[0] = System.currentTimeMillis()
+                // Back, anywhere in the guide or the side panel: press = step back (groups -> menu -> exit),
+                // hold = full screen on the channel that's playing (TiviMate).
+                if (e.key == Key.Back && !background && playlists?.isEmpty() != true && (channel != null || drawerOpen)) {
+                    when (e.type) {
+                        KeyEventType.KeyDown -> {
+                            if (e.nativeKeyEvent.repeatCount == 0) { backLongFired = false; backDownSeen = true }
+                            else if (backDownSeen && !backLongFired) { backLongFired = true; guideAction("return_player") }
+                        }
+                        KeyEventType.KeyUp -> {
+                            if (backDownSeen && !backLongFired) { if (drawerOpen) guideBack() else guideAction(mapped("back")) }
+                            backLongFired = false; backDownSeen = false
+                        }
+                    }
+                    return@onKeyEvent true
+                }
                 if (drawerOpen) return@onKeyEvent false
                 // Welcome screen: only the two buttons; no side menu (Left/Menu/arrows do nothing here).
                 if (playlists?.isEmpty() == true) return@onKeyEvent e.key != Key.Back
@@ -566,6 +584,7 @@ fun GuideScreen(
                 expanded = railExpandedNow,
                 onRailFocus = { railFocused = it },
                 passive = background,
+                railFocusRequest = railFocusRequest,
             )
         }
 
@@ -1005,6 +1024,7 @@ private fun SideDrawer(
     onRailFocus: (Boolean) -> Unit = {},
     /** Shown behind Settings: just a picture, never takes the remote. */
     passive: Boolean = false,
+    railFocusRequest: Int = 0,
 ) {
     val context = LocalContext.current
     val groupFocus = remember { FocusRequester() }
@@ -1108,6 +1128,12 @@ private fun SideDrawer(
                 }
             }
         }
+    }
+    // Back on the groups: the remote moves onto the menu ("TV"), which opens with its labels.
+    LaunchedEffect(railFocusRequest) {
+        if (passive || railFocusRequest == 0) return@LaunchedEffect
+        myListOpen = false
+        runCatching { menuFocus.requestFocus() }
     }
     LaunchedEffect(Unit) {
         if (passive) return@LaunchedEffect
