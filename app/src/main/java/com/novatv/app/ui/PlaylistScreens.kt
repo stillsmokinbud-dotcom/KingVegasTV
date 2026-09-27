@@ -7,6 +7,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.MaterialTheme
@@ -49,15 +54,105 @@ fun typeHint(t: PlaylistType): String = when (t) {
     PlaylistType.STALKER -> "Portal address and MAC address"
 }
 
-private enum class AddField { URL, USER, PASS, MAC, NAME, EPG }
+private enum class AddField { URL, USER, PASS, MAC, NAME, EPG, S_USER, S_PASS, DEV1, DEV2, SERIAL }
+
+/** TiviMate's add-playlist pages: a light panel with a big icon and title on the left, the choices in the
+ *  middle, and Next / Back (or Cancel) in a narrow column on the right. */
+@Composable
+private fun GuidedStep(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    description: String?,
+    actions: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
+    side: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
+) {
+    val left = androidx.compose.ui.graphics.Color(0xFF3A3E47)
+    val mid = androidx.compose.ui.graphics.Color(0xFF282B31)
+    androidx.compose.foundation.layout.Row(Modifier.fillMaxSize().background(mid)) {
+        androidx.compose.foundation.layout.Row(
+            Modifier.weight(0.46f).fillMaxHeight().background(left).padding(start = 48.dp, end = 24.dp),
+            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+        ) {
+            androidx.compose.material3.Icon(icon, null, tint = androidx.compose.ui.graphics.Color.White,
+                modifier = Modifier.size(88.dp))
+            androidx.compose.foundation.layout.Spacer(Modifier.width(28.dp))
+            Column {
+                Text(title, fontSize = 38.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Light,
+                    color = androidx.compose.ui.graphics.Color.White, lineHeight = 44.sp)
+                if (!description.isNullOrBlank()) Text(description, fontSize = 15.sp, lineHeight = 21.sp,
+                    color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.7f), modifier = Modifier.padding(top = 10.dp))
+            }
+        }
+        Column(
+            Modifier.weight(0.36f).fillMaxHeight().padding(horizontal = 22.dp)
+                .verticalScroll(androidx.compose.foundation.rememberScrollState()),
+            verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center,
+        ) {
+            androidx.compose.foundation.layout.Spacer(Modifier.height(80.dp))
+            actions()
+            androidx.compose.foundation.layout.Spacer(Modifier.height(80.dp))
+        }
+        androidx.compose.foundation.layout.Box(Modifier.width(1.dp).fillMaxHeight().background(androidx.compose.ui.graphics.Color.White.copy(alpha = 0.22f)))
+        Column(
+            Modifier.weight(0.18f).fillMaxHeight().padding(horizontal = 16.dp),
+            verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center,
+        ) { side() }
+    }
+}
+
+/** One choice in the middle column: a label, its current value underneath, or a check box. */
+@Composable
+private fun GuidedRow(
+    title: String,
+    value: String? = null,
+    checked: Boolean? = null,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    TvRow(modifier = modifier.padding(vertical = 2.dp), onClick = onClick) {
+        if (checked != null) {
+            androidx.compose.material3.Icon(
+                if (checked) androidx.compose.material.icons.Icons.Filled.CheckBox
+                else androidx.compose.material.icons.Icons.Filled.CheckBoxOutlineBlank,
+                null, tint = rowContentColor(), modifier = Modifier.size(18.dp))
+            androidx.compose.foundation.layout.Spacer(Modifier.width(10.dp))
+        }
+        Column {
+            Text(title, fontSize = 16.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Medium, color = rowContentColor(), maxLines = 1)
+            if (!value.isNullOrBlank()) Text(value, fontSize = 12.sp, color = rowContentColor(true), maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+        }
+    }
+}
+
+/** Next / Back / Cancel in the right-hand column. */
+@Composable
+private fun GuidedSide(label: String, arrow: Boolean = false, onClick: () -> Unit) {
+    TvRow(modifier = Modifier.padding(vertical = 2.dp), onClick = onClick) {
+        Text(label, fontSize = 16.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Medium, color = rowContentColor(),
+            modifier = Modifier.weight(1f))
+        if (arrow) Text("▸", fontSize = 14.sp, color = rowContentColor())
+    }
+}
+
+private fun randomMac(): String {
+    val r = java.util.Random()
+    return "00:1A:79:" + (1..3).joinToString(":") { "%02X".format(r.nextInt(256)) }
+}
 
 /**
  * TiviMate-style add flow.
- *  type == null → "Choose playlist type" (M3U link / M3U file / Xtream Codes / Stalker portal)
- *  otherwise    → that type's own form → Next → "Playlist is processed" → name + TV guide → Done
+ *  type == null → "Playlist type" (M3U playlist / Xtream Codes / Stalker Portal)
+ *  otherwise    → that type's own page → Next → "Playlist is processed" (counts + name) → Next
  */
 @Composable
-fun AddPlaylistScreen(type: PlaylistType?, onPickType: (PlaylistType) -> Unit, onFinished: () -> Unit) {
+fun AddPlaylistScreen(
+    type: PlaylistType?,
+    onPickType: (PlaylistType) -> Unit,
+    onFinished: () -> Unit,
+    /** Cancel / Back: one step back (to the playlist types, or out of the flow). */
+    onCancel: () -> Unit = onFinished,
+) {
     // Free version: one playlist (like TiviMate). Premium: unlimited.
     // Decided once when the flow opens, so adding the first playlist doesn't trigger it mid-way.
     val ctx = LocalContext.current
@@ -70,16 +165,14 @@ fun AddPlaylistScreen(type: PlaylistType?, onPickType: (PlaylistType) -> Unit, o
         PaywallDialog("More than one playlist") { onFinished() }
         return
     }
+    val icons = androidx.compose.material.icons.Icons.Filled
     if (type == null) {
         val fr = remember { FocusRequester() }
-        Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(32.dp)) {
-            ScreenHeader("Add playlist", "This app doesn't include any channels. Add a playlist from your provider.")
-            PlaylistType.entries.forEachIndexed { i, t ->
-                TvRow(modifier = if (i == 0) Modifier.focusRequester(fr) else Modifier, onClick = { onPickType(t) }) {
-                    RowTitle(typeTitle(t), typeHint(t))
-                }
-            }
-        }
+        GuidedStep(icons.PlaylistAdd, "Playlist type", null, actions = {
+            GuidedRow("M3U playlist", modifier = Modifier.focusRequester(fr)) { onPickType(PlaylistType.M3U_URL) }
+            GuidedRow("Xtream Codes") { onPickType(PlaylistType.XTREAM) }
+            GuidedRow("Stalker Portal") { onPickType(PlaylistType.STALKER) }
+        }, side = { GuidedSide("Cancel") { onCancel() } })
         AutoFocus(fr)
         return
     }
@@ -88,7 +181,10 @@ fun AddPlaylistScreen(type: PlaylistType?, onPickType: (PlaylistType) -> Unit, o
     val app = context.app
     val repo = app.playlists
     val scope = rememberCoroutineScope()
-    var p by remember { mutableStateOf(Playlist(id = repo.newId(), name = "", type = type)) }
+    var p by remember {
+        mutableStateOf(Playlist(id = repo.newId(), name = "", type = type,
+            mac = if (type == PlaylistType.STALKER) randomMac() else ""))
+    }
     var step by remember { mutableStateOf(0) } // 0 = form, 1 = processed
     var busy by remember { mutableStateOf<String?>(null) }
     var editing by remember { mutableStateOf<AddField?>(null) }
@@ -103,20 +199,21 @@ fun AddPlaylistScreen(type: PlaylistType?, onPickType: (PlaylistType) -> Unit, o
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             runCatching { context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
-            p = p.copy(url = uri.toString(), name = p.name.ifBlank { uri.lastPathSegment?.substringAfterLast('/')?.substringBeforeLast('.') ?: "" })
+            p = p.copy(type = PlaylistType.M3U_FILE, url = uri.toString(),
+                name = p.name.ifBlank { uri.lastPathSegment?.substringAfterLast('/')?.substringBeforeLast('.') ?: "" })
         }
     }
 
     fun next() {
         val problem = when {
-            p.url.isBlank() -> when (type) {
+            p.url.isBlank() -> when (p.type) {
                 PlaylistType.M3U_FILE -> "Select a playlist file."
                 PlaylistType.XTREAM -> "Enter the server address."
-                PlaylistType.STALKER -> "Enter the portal address."
+                PlaylistType.STALKER -> "Enter the server address."
                 else -> "Enter the playlist URL."
             }
-            type == PlaylistType.XTREAM && (p.username.isBlank() || p.password.isBlank()) -> "Enter the username and password."
-            type == PlaylistType.STALKER && p.mac.isBlank() -> "Enter the MAC address."
+            p.type == PlaylistType.XTREAM && (p.username.isBlank() || p.password.isBlank()) -> "Enter the username and password."
+            p.type == PlaylistType.STALKER && p.mac.isBlank() -> "Enter the MAC address."
             else -> null
         }
         if (problem != null) { message = "Missing information" to problem; return }
@@ -147,96 +244,81 @@ fun AddPlaylistScreen(type: PlaylistType?, onPickType: (PlaylistType) -> Unit, o
         }
     }
 
-    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(32.dp)) {
-        if (step == 0) {
-            ScreenHeader(typeTitle(type), busy ?: typeHint(type))
-            LazyColumn {
-                when (type) {
-                    PlaylistType.M3U_URL -> {
-                        item {
-                            TvRow(modifier = Modifier.focusRequester(fr), onClick = { editing = AddField.URL }) {
-                                RowTitle("Enter URL", p.url.ifBlank { "http://…/playlist.m3u" })
-                            }
-                        }
-                        item {
-                            TvRow(onClick = {
-                                val clip = (context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager)
-                                    .primaryClip?.getItemAt(0)?.text?.toString()?.trim()
-                                if (clip.isNullOrBlank()) message = "Clipboard is empty" to "Copy the playlist link first."
-                                else p = p.copy(url = clip)
-                            }) { RowTitle("Paste from clipboard") }
-                        }
-                    }
-                    PlaylistType.M3U_FILE -> item {
-                        TvRow(modifier = Modifier.focusRequester(fr), onClick = { filePicker.launch(arrayOf("*/*")) }) {
-                            RowTitle("Select file", if (p.url.isBlank()) "Browse this device or a USB drive" else p.url)
-                        }
-                    }
-                    PlaylistType.XTREAM -> {
-                        item {
-                            TvRow(modifier = Modifier.focusRequester(fr), onClick = { editing = AddField.URL }) {
-                                RowTitle("Server address", p.url.ifBlank { "http://server.com:8080" })
-                            }
-                        }
-                        item { TvRow(onClick = { editing = AddField.USER }) { RowTitle("Username", p.username.ifBlank { "Not set" }) } }
-                        item { TvRow(onClick = { editing = AddField.PASS }) { RowTitle("Password", if (p.password.isBlank()) "Not set" else "••••") } }
-                        item {
-                            TvRow(onClick = { p = p.copy(includeVod = !p.includeVod) }) {
-                                RowTitle("Include VOD (movies and series)", if (p.includeVod) "On" else "Off")
-                            }
-                        }
-                    }
-                    PlaylistType.STALKER -> {
-                        item {
-                            TvRow(modifier = Modifier.focusRequester(fr), onClick = { editing = AddField.URL }) {
-                                RowTitle("Portal address", p.url.ifBlank { "http://portal.com/c/" })
-                            }
-                        }
-                        item { TvRow(onClick = { editing = AddField.MAC }) { RowTitle("MAC address", p.mac.ifBlank { "00:1A:79:…" }) } }
-                    }
-                }
-                item { TvRow(onClick = { if (busy == null) next() }) { RowTitle("Next  ›") } }
-            }
-        } else {
-            fun n(v: Int) = "%,d".format(v)
-            val vodLine = when {
-                movieCount == -1 -> "No movies or TV shows in this playlist"
-                movieCount == null -> (vodStatus ?: "Loading movies and TV shows…")
-                else -> "${n(movieCount!!)} movies loaded\n${n(showCount ?: 0)} TV shows loaded"
-            }
-            ScreenHeader("Playlist is processed", "${n(channelCount)} channels loaded\n$vodLine")
-            LazyColumn {
-                item {
-                    TvRow(modifier = Modifier.focusRequester(fr), onClick = { editing = AddField.NAME }) {
-                        RowTitle("Playlist name", p.name)
-                    }
-                }
-                item {
-                    TvRow(onClick = { editing = AddField.EPG }) {
-                        RowTitle("TV guide URL", p.epgUrl.ifBlank { "From the playlist (automatic)" })
-                    }
-                }
-                item {
-                    TvRow(onClick = {
-                        scope.launch {
-                            repo.save(p)
-                            app.appScope.launch { app.epg.update() }
-                            onFinished()
-                        }
-                    }) { RowTitle("Done  ✓") }
-                }
-            }
+    if (step == 0) {
+        val side: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit = {
+            GuidedSide("Next", arrow = true) { if (busy == null) next() }
+            GuidedSide("Back") { onCancel() }
         }
+        when (type) {
+            PlaylistType.M3U_URL, PlaylistType.M3U_FILE -> GuidedStep(icons.Input, "M3U playlist", busy, actions = {
+                GuidedRow("Enter URL", if (p.type == PlaylistType.M3U_URL) p.url else null, modifier = Modifier.focusRequester(fr)) {
+                    p = p.copy(type = PlaylistType.M3U_URL); editing = AddField.URL
+                }
+                GuidedRow("Paste from clipboard") {
+                    val clip = (context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager)
+                        .primaryClip?.getItemAt(0)?.text?.toString()?.trim()
+                    if (clip.isNullOrBlank()) message = "Clipboard is empty" to "Copy the playlist link first."
+                    else p = p.copy(type = PlaylistType.M3U_URL, url = clip)
+                }
+                GuidedRow("Select local playlist", if (p.type == PlaylistType.M3U_FILE) p.url.substringAfterLast('/') else null) {
+                    filePicker.launch(arrayOf("*/*"))
+                }
+            }, side = side)
+            PlaylistType.XTREAM -> GuidedStep(icons.Login, "Xtream Codes", busy, actions = {
+                GuidedRow("Server address", p.url, modifier = Modifier.focusRequester(fr)) { editing = AddField.URL }
+                GuidedRow("Username", p.username) { editing = AddField.USER }
+                GuidedRow("Password", if (p.password.isBlank()) null else "••••••") { editing = AddField.PASS }
+                GuidedRow("Include TV channels", checked = p.includeLive) { p = p.copy(includeLive = !p.includeLive) }
+                GuidedRow("Include VOD", checked = p.includeVod) { p = p.copy(includeVod = !p.includeVod) }
+            }, side = side)
+            PlaylistType.STALKER -> GuidedStep(icons.Login, "Stalker Portal", busy, actions = {
+                GuidedRow("Server address", p.url, modifier = Modifier.focusRequester(fr)) { editing = AddField.URL }
+                GuidedRow("MAC address", p.mac) { editing = AddField.MAC }
+                GuidedRow("Username (optional)", p.stalkerUser) { editing = AddField.S_USER }
+                GuidedRow("Password (optional)", if (p.stalkerPass.isBlank()) null else "••••••") { editing = AddField.S_PASS }
+                GuidedRow("Device ID (optional)", p.deviceId) { editing = AddField.DEV1 }
+                GuidedRow("Device ID 2 (optional)", p.deviceId2) { editing = AddField.DEV2 }
+                GuidedRow("Serial number (optional)", p.serial) { editing = AddField.SERIAL }
+                GuidedRow("Include TV channels", checked = p.includeLive) { p = p.copy(includeLive = !p.includeLive) }
+                GuidedRow("Include VOD", checked = p.includeVod) { p = p.copy(includeVod = !p.includeVod) }
+            }, side = side)
+        }
+    } else {
+        fun n(v: Int) = "%,d".format(v)
+        val vodLine = when {
+            movieCount == -1 -> ""
+            movieCount == null -> (vodStatus ?: "Loading movies and TV shows…")
+            else -> "Movies: ${n(movieCount!!)}\nShows: ${n(showCount ?: 0)}"
+        }
+        GuidedStep(icons.PlaylistAddCheck, "Playlist is processed", "Channels: ${n(channelCount)}" + if (vodLine.isNotEmpty()) "\n$vodLine" else "",
+            actions = {
+                GuidedRow("Playlist name", p.name, modifier = Modifier.focusRequester(fr)) { editing = AddField.NAME }
+                GuidedRow("TV guide URL", p.epgUrl.ifBlank { "From the playlist (automatic)" }) { editing = AddField.EPG }
+            },
+            side = {
+                GuidedSide("Next", arrow = true) {
+                    scope.launch {
+                        repo.save(p)
+                        app.appScope.launch { app.epg.update() }
+                        onFinished()
+                    }
+                }
+            })
     }
     LaunchedEffect(step) { delay(50); runCatching { fr.requestFocus() } }
 
     when (editing) {
-        AddField.URL -> TextDialog(if (type == PlaylistType.XTREAM) "Server address" else "URL", p.url,
-            hint = if (type == PlaylistType.XTREAM) "http://server.com:8080" else "http://…",
-            onDismiss = { editing = null }) { p = p.copy(url = it); editing = null }
-        AddField.USER -> TextDialog("Username", p.username, onDismiss = { editing = null }) { p = p.copy(username = it); editing = null }
+        AddField.URL -> TextDialog(if (p.type == PlaylistType.M3U_URL) "URL" else "Server address", p.url,
+            hint = if (p.type == PlaylistType.M3U_URL) "http://…" else "http://server.com:8080",
+            onDismiss = { editing = null }) { p = p.copy(url = it.trim()); editing = null }
+        AddField.USER -> TextDialog("Username", p.username, onDismiss = { editing = null }) { p = p.copy(username = it.trim()); editing = null }
         AddField.PASS -> TextDialog("Password", p.password, secret = true, onDismiss = { editing = null }) { p = p.copy(password = it); editing = null }
-        AddField.MAC -> TextDialog("MAC address", p.mac, onDismiss = { editing = null }) { p = p.copy(mac = it.uppercase()); editing = null }
+        AddField.MAC -> TextDialog("MAC address", p.mac, onDismiss = { editing = null }) { p = p.copy(mac = it.trim().uppercase()); editing = null }
+        AddField.S_USER -> TextDialog("Username", p.stalkerUser, onDismiss = { editing = null }) { p = p.copy(stalkerUser = it.trim()); editing = null }
+        AddField.S_PASS -> TextDialog("Password", p.stalkerPass, secret = true, onDismiss = { editing = null }) { p = p.copy(stalkerPass = it); editing = null }
+        AddField.DEV1 -> TextDialog("Device ID", p.deviceId, onDismiss = { editing = null }) { p = p.copy(deviceId = it.trim()); editing = null }
+        AddField.DEV2 -> TextDialog("Device ID 2", p.deviceId2, onDismiss = { editing = null }) { p = p.copy(deviceId2 = it.trim()); editing = null }
+        AddField.SERIAL -> TextDialog("Serial number", p.serial, onDismiss = { editing = null }) { p = p.copy(serial = it.trim()); editing = null }
         AddField.NAME -> TextDialog("Playlist name", p.name, onDismiss = { editing = null }) { p = p.copy(name = it.ifBlank { p.name }); editing = null }
         AddField.EPG -> TextDialog("TV guide URL", p.epgUrl, hint = "Leave blank to use the playlist's own guide",
             onDismiss = { editing = null }) { p = p.copy(epgUrl = it); editing = null }
