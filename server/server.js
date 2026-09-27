@@ -73,6 +73,58 @@ CREATE TABLE IF NOT EXISTS payments (
 );
 `);
 
+// ------------------------------------------------------------------ cloud copy (Turso, free)
+// The free Render server forgets its files on every restart. When TURSO_DATABASE_URL is set, every change is
+// also written to a Turso cloud database, and on startup everything is loaded back from it — so customers,
+// devices and orders survive restarts.
+const CLOUD_URL = (env.TURSO_DATABASE_URL || '').trim();
+const CLOUD_TOKEN = (env.TURSO_AUTH_TOKEN || '').trim();
+const cloud = CLOUD_URL ? require('@libsql/client').createClient({ url: CLOUD_URL, authToken: CLOUD_TOKEN || undefined }) : null;
+const localPrepare = db.prepare.bind(db);
+const TABLES = localPrepare(`SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).all();
+const cloudState = { on: !!cloud, restored: false, writes: 0, errors: 0, lastError: '' };
+let cloudQueue = Promise.resolve();
+function mirror(sql, args) {
+  cloudQueue = cloudQueue.then(async () => {
+    for (let attempt = 0; attempt < 6; attempt++) {
+      try { await cloud.execute({ sql, args: args.map(v => (v === undefined ? null : v)) }); cloudState.writes++; return; }
+      catch (e) { cloudState.errors++; cloudState.lastError = e.message; console.error('cloud write failed:', e.message); await new Promise(r => setTimeout(r, 1500 * (attempt + 1))); }
+    }
+  });
+}
+if (cloud) {
+  // Every write (INSERT / UPDATE / DELETE) runs here first, then is copied to the cloud in the same order.
+  db.prepare = sql => {
+    const st = localPrepare(sql);
+    if (/^\s*select/i.test(sql)) return st;
+    return { run: (...a) => { const r = st.run(...a); mirror(sql, a); return r; }, get: (...a) => st.get(...a), all: (...a) => st.all(...a) };
+  };
+}
+async function restoreFromCloud() {
+  for (const t of TABLES) await cloud.execute(t.sql.replace(/^CREATE TABLE\s+(IF NOT EXISTS\s+)?/i, 'CREATE TABLE IF NOT EXISTS '));
+  const data = {};
+  for (const t of TABLES) data[t.name] = await cloud.execute(`SELECT * FROM ${t.name}`);
+  let seq = null;
+  try { seq = await cloud.execute('SELECT name, seq FROM sqlite_sequence'); } catch { /* no rows yet */ }
+  db.exec('BEGIN');
+  try {
+    for (const t of TABLES) {
+      const rs = data[t.name];
+      localPrepare(`DELETE FROM ${t.name}`).run();
+      if (!rs.rows.length) continue;
+      const ins = localPrepare(`INSERT INTO ${t.name} (${rs.columns.join(', ')}) VALUES (${rs.columns.map(() => '?').join(', ')})`);
+      for (const row of rs.rows) ins.run(...rs.columns.map(c => (typeof row[c] === 'bigint' ? Number(row[c]) : row[c])));
+    }
+    // Keep new ids in step with the cloud copy.
+    try { localPrepare('DELETE FROM sqlite_sequence').run(); } catch { /* table appears after the first insert */ }
+    for (const r of seq?.rows || []) localPrepare('INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?)').run(String(r.name), Number(r.seq));
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  cloudState.restored = true;
+  const n = localPrepare('SELECT COUNT(*) n FROM users').get().n;
+  console.log(`Loaded ${n} accounts from the cloud database.`);
+}
+
 // Prices in cents — editable in the admin panel. Defaults undercut TiviMate on purpose.
 const DEFAULT_PRICES = { monthly: 99, yearly: 499, lifetime: 1499 };
 function prices() {
@@ -154,8 +206,9 @@ function accountJson(u, deviceId) {
   };
 }
 
-// Bootstrap the admin account from ADMIN_EMAIL / ADMIN_PASSWORD.
-if (ADMIN_EMAIL && ADMIN_PASSWORD) {
+// Bootstrap the admin account from ADMIN_EMAIL / ADMIN_PASSWORD (after loading the cloud copy, see startup).
+function bootstrapAdmin() {
+  if (!ADMIN_EMAIL || !ADMIN_PASSWORD) return;
   const u = userByEmail(ADMIN_EMAIL);
   if (!u) createUser(ADMIN_EMAIL, ADMIN_PASSWORD, 'admin');
   else if (u.role !== 'admin') db.prepare(`UPDATE users SET role = 'admin' WHERE id = ?`).run(u.id);
@@ -574,7 +627,10 @@ app.get('/admin', (req, res) => {
       <td>${esc(PLAN_LABEL[o.plan])}</td><td>${money(o.amount)}</td><td>${esc(o.status)}</td></tr>`).join('')}</table></details>` : ''}
     <form class="row" method="post" action="/admin/cashtag" style="margin-top:12px"><label style="flex:1">Your Cash App $cashtag (leave empty to turn Cash App off)
       <input name="cashtag" value="${esc(cashtag() ? '$' + cashtag() : '')}" placeholder="$yourcashtag"></label><button class="gray">Save</button></form></div>`;
-  res.send(page('Admin', `${ordersHtml}<div class="row" style="margin-bottom:18px"><div class="card" style="flex:1;margin:0"><div class="muted">Accounts</div><div class="price">${total}</div></div>
+  const cloudHtml = cloudState.on && cloudState.restored
+    ? `<div class="card" style="padding:12px 18px"><span class="ok">● Customer data is saved in the cloud</span> <span class="muted">— accounts survive server restarts.${cloudState.errors ? ` (${cloudState.errors} cloud write retries, last: ${esc(cloudState.lastError)})` : ''}</span></div>`
+    : `<div class="err"><b>Customer data is NOT saved.</b> Accounts and orders are erased when the server restarts. ${cloud ? `Cloud database error: ${esc(cloudState.lastError)}` : 'Set TURSO_DATABASE_URL and TURSO_AUTH_TOKEN on Render to fix this.'}</div>`;
+  res.send(page('Admin', `${cloudHtml}${ordersHtml}<div class="row" style="margin-bottom:18px"><div class="card" style="flex:1;margin:0"><div class="muted">Accounts</div><div class="price">${total}</div></div>
     <div class="card" style="flex:1;margin:0"><div class="muted">Premium now</div><div class="price">${premiumCount}</div></div>
     <div class="card" style="flex:1;margin:0"><div class="muted">Revenue (real payments)</div><div class="price">${money(revenue)}</div></div></div>
     <div class="card"><h3 style="margin-top:0">Add a subscriber</h3><form class="row" method="post" action="/admin/users">
@@ -649,11 +705,26 @@ app.post('/admin/prices', (req, res) => {
   res.redirect('/admin');
 });
 
-app.get('/health', (req, res) => res.json({ ok: true, testMode: testMode() }));
+app.get('/health', (req, res) => res.json({ ok: true, testMode: testMode(), cloud: cloudState.on && cloudState.restored, cloudWrites: cloudState.writes, cloudErrors: cloudState.errors }));
 
 app.use((err, req, res, next) => { console.error(err); res.status(500).send(page('Error', `<div class="err">Something went wrong: ${esc(err.message)}</div>`)); });
 
-app.listen(PORT, () => {
-  console.log(`${APP_NAME} license server on ${PUBLIC_URL} ${testMode() ? '(TEST MODE — no payment method)' : ''}`);
-  if (!ADMIN_EMAIL) console.log('Tip: set ADMIN_EMAIL and ADMIN_PASSWORD to create your admin account.');
-});
+(async () => {
+  if (cloud) {
+    // Retry for a while: never start with an empty customer list just because the cloud was slow to answer.
+    for (let attempt = 1; ; attempt++) {
+      try { await restoreFromCloud(); break; }
+      catch (e) {
+        cloudState.lastError = e.message; console.error(`cloud restore failed (try ${attempt}):`, e.message);
+        if (attempt >= 10) { console.error('Starting without the cloud copy.'); cloudState.on = false; break; }
+        await new Promise(r => setTimeout(r, 3000));
+      }
+    }
+  }
+  bootstrapAdmin();
+  app.listen(PORT, () => {
+    console.log(`${APP_NAME} license server on ${PUBLIC_URL} ${testMode() ? '(TEST MODE — no payment method)' : ''}`);
+    console.log(cloud ? `Cloud database: ${cloudState.restored ? 'connected' : 'NOT connected'}` : 'Cloud database: not set up (accounts reset when the server restarts)');
+    if (!ADMIN_EMAIL) console.log('Tip: set ADMIN_EMAIL and ADMIN_PASSWORD to create your admin account.');
+  });
+})();
