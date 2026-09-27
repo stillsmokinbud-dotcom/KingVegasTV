@@ -43,6 +43,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -58,6 +59,9 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -455,7 +459,14 @@ fun GuideScreen(
             }
         }
 
-        if (drawerOpen && playlists?.isEmpty() != true && !background) {
+        // Slides in from the left (TiviMate); animated so it doesn't "jump" onto the screen.
+        androidx.compose.animation.AnimatedVisibility(
+            visible = drawerOpen && playlists?.isEmpty() != true && !background,
+            enter = androidx.compose.animation.slideInHorizontally(androidx.compose.animation.core.tween(200)) { -it / 3 } +
+                androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(160)),
+            exit = androidx.compose.animation.slideOutHorizontally(androidx.compose.animation.core.tween(160)) { -it / 3 } +
+                androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(140)),
+        ) {
             SideDrawer(
                 groups = groups, groupIndex = groupIndex,
                 onGroup = { i ->
@@ -466,6 +477,24 @@ fun GuideScreen(
                 onClose = { drawerOpen = false },
                 focusMenu = drawerOnMenu,
             )
+        }
+
+        // TiviMate-style tips card (bottom right), shown the first time the guide opens.
+        var hints by remember { mutableStateOf(!app.guideHintsShown) }
+        if (hints && !background && channel != null && !drawerOpen) {
+            LaunchedEffect(Unit) { app.guideHintsShown = true; delay(9000); hints = false }
+            Column(
+                Modifier.align(Alignment.BottomEnd).padding(end = 28.dp, bottom = 26.dp)
+                    .clip(RoundedCornerShape(6.dp)).background(Color.White.copy(alpha = 0.92f))
+                    .padding(horizontal = 16.dp, vertical = 10.dp)
+            ) {
+                listOf("Long OK" to "open menu", "Left" to "show groups", "Long Left" to "navigate to past programs").forEach { (k, v) ->
+                    Text(buildAnnotatedString {
+                        withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append("$k: ") }
+                        append(v)
+                    }, fontSize = 13.sp, color = Color(0xFF1B1D22))
+                }
+            }
         }
 
         if (numberBuffer.isNotEmpty()) {
@@ -724,6 +753,7 @@ private fun GuideGrid(
             }
             Box(Modifier.padding(start = CHANNEL_COL).fillMaxWidth().height(1.dp).background(colors.onBackground.copy(alpha = 0.25f)))
             // Rows
+            val playingId = LocalContext.current.app.lastPlayedId
             for (i in top until minOf(chs.size, top + rows)) {
                 val c = chs[i]
                 val isRow = i == row
@@ -750,6 +780,8 @@ private fun GuideGrid(
                                 overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                         } else Spacer(Modifier.weight(1f))
                         if (c.id in favorites) Text("★", fontSize = 12.sp, color = Color(0xFFFFC107))
+                        // TiviMate marks the channel you were last watching with a small play arrow.
+                        if (c.id == playingId) Text("▶", fontSize = 11.sp, color = fg.copy(alpha = 0.85f))
                     }
                     Box(Modifier.width(progWidth).fillMaxHeight()) {
                         for (cell in epg.cells(c, windowStart, windowEnd)) {
@@ -823,12 +855,15 @@ private fun SideDrawer(
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = (groupIndex - 4).coerceAtLeast(0))
     val colors = MaterialTheme.colorScheme
     val railBg = colors.surfaceVariant
+    val railWidth by androidx.compose.animation.core.animateDpAsState(
+        if (railExpanded) 230.dp else 72.dp, androidx.compose.animation.core.tween(170), label = "rail")
     Row(Modifier.fillMaxHeight()) {
         // Icon rail; expands to show labels (TiviMate's main menu) when it has focus.
         Column(
             Modifier
-                .width(if (railExpanded) 230.dp else 72.dp)
+                .width(railWidth)
                 .fillMaxHeight()
+                .clipToBounds()
                 .background(railBg)
                 .onFocusChanged { railExpanded = it.hasFocus || groups.isEmpty() }
                 .padding(horizontal = 8.dp, vertical = 22.dp)
