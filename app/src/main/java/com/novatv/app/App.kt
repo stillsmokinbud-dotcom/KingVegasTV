@@ -46,6 +46,8 @@ class App : Application() {
     /** Where the guide was (group and channel row), so it reopens exactly there with no blank frame. */
     @Volatile var guideGroupIndex: Int = -1
     @Volatile var guideRow: Int = 0
+    /** Group the playing channel was started from (the guide goes back to it after full screen). */
+    @Volatile var playGroupIndex: Int = -1
     /** The guide's menu item that opened the current screen (the guide reopens with the menu on it). */
     @Volatile var guideMenuReturn: com.novatv.app.ui.MenuDest? = null
     /** Latest settings, for code outside Compose. */
