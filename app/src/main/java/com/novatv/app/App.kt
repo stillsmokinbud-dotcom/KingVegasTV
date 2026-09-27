@@ -36,6 +36,9 @@ class App : Application() {
     var playQueue: List<Channel> = emptyList()
     /** True while the full-screen player is open (for picture-in-picture on Home). */
     @Volatile var playerActive: Boolean = false
+    /** Channel last watched in the player (the guide marks it with ▶). */
+    @Volatile var lastPlayedId: String? = null
+    @Volatile var guideHintsShown: Boolean = false
     /** Latest settings, for code outside Compose. */
     @Volatile var lastSettings: com.novatv.app.settings.AppSettings? = null
     /** Set by the player to open the TV guide with the groups list showing. */
