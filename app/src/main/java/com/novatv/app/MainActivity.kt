@@ -51,6 +51,7 @@ sealed interface Screen {
     data class Info(val title: String, val text: String) : Screen
     data class Player(val channelId: String) : Screen
     data object Recordings : Screen
+    data object History : Screen
     data object Reminders : Screen
     data class Multiview(val channelIds: List<String>) : Screen
     data class Vod(val kind: com.novatv.app.playlist.VodKind) : Screen
@@ -157,7 +158,7 @@ private fun AppRoot(settings: AppSettings, onFinish: () -> Unit) {
             MenuDest.MY_REMINDERS -> push(Screen.Reminders)
             MenuDest.MY_MOVIES -> push(Screen.Info("My movies", "No movies"))
             MenuDest.MY_SHOWS -> push(Screen.Info("My shows", "No shows"))
-            MenuDest.HISTORY -> push(Screen.Info("History", "Recently watched channels appear in the TV guide under \"Recently watched\"."))
+            MenuDest.HISTORY -> push(Screen.History)
             MenuDest.MY_LIST -> push(Screen.Info("My list", "No programs"))
             MenuDest.SETTINGS -> openSettings()
         }
@@ -215,6 +216,10 @@ private fun AppRoot(settings: AppSettings, onFinish: () -> Unit) {
                 }
             }
             Screen.Recordings -> com.novatv.app.ui.RecordingsScreen()
+            Screen.History -> com.novatv.app.ui.HistoryScreen(settings) { queue, channel ->
+                app.playQueue = queue
+                push(Screen.Player(channel.id))
+            }
             Screen.Reminders -> com.novatv.app.ui.RemindersScreen()
             is Screen.Multiview -> {
                 val all = app.playQueue.ifEmpty { app.playlists.channels.value }
