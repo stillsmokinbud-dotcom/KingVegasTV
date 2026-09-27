@@ -110,6 +110,8 @@ class MainActivity : ComponentActivity() {
             else -> java.util.Locale(code)
         }
         java.util.Locale.setDefault(locale)
+        // Leave the screen setup untouched unless a language was actually picked.
+        if (code == "system" || code.isBlank()) return
         runCatching {
             val cfg = android.content.res.Configuration(resources.configuration).apply { setLocale(locale) }
             resources.updateConfiguration(cfg, resources.displayMetrics)
