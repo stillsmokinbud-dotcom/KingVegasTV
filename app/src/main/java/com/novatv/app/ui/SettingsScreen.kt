@@ -106,7 +106,8 @@ fun SettingsScreen(
     var confirm by remember { mutableStateOf<Pair<String, () -> Unit>?>(null) }
 
     fun push(p: Page) { stack.add(p) }
-    fun pop() { if (stack.size > 1) stack.removeAt(stack.lastIndex) else onClose() }
+    var closing by remember { mutableStateOf(false) }
+    fun pop() { if (stack.size > 1) stack.removeAt(stack.lastIndex) else closing = true }
     BackHandler { pop() }
 
     fun needPin(key: String): Boolean = settings.premium && settings.bool("parental.enabled") && settings.bool(key)
@@ -230,7 +231,7 @@ fun SettingsScreen(
 
     val page = stack.last()
     val depth = stack.size
-    SidePanel(page.title) {
+    SidePanel(page.title, closing = closing, onClosed = onClose) {
         val startIndex = focusMemory[depth] ?: 0
         val listState = rememberLazyListState(initialFirstVisibleItemIndex = maxOf(0, startIndex - 3))
         val fr = remember(depth, page) { FocusRequester() }
