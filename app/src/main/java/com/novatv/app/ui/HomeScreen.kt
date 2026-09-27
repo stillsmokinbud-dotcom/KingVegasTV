@@ -51,6 +51,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
@@ -198,6 +199,10 @@ fun GuideScreen(
     var drawerOpen by remember { mutableStateOf(app.openGuideGroups.also { app.openGuideGroups = false } || menuReturn != null) }
     var drawerOnMenu by remember { mutableStateOf(menuReturn != null) } // Back opens the drawer on the main menu, Left on the groups
     var railFocused by remember { mutableStateOf(menuReturn != null) }
+    // TiviMate's two sliders, one at a time: first the groups (with the slim icon bar), then the
+    // full menu with labels. Kept as its own state (not "who has the remote"), so it never opens
+    // both at once and never shrinks and re-opens when you come back from Settings.
+    var railOpen by remember { mutableStateOf(menuReturn != null) }
     var railFocusRequest by remember { mutableIntStateOf(0) } // bump to move the remote onto the side menu
     var backLongFired by remember { mutableStateOf(false) }
     var backDownSeen by remember { mutableStateOf(false) }
@@ -275,10 +280,10 @@ fun GuideScreen(
     }
 
     fun handleKey(key: Key, held: Boolean = false): Boolean {
-        if (key == Key.Menu) { drawerOpen = true; return true }
+        if (key == Key.Menu) { drawerOnMenu = true; railOpen = true; drawerOpen = true; return true }
         val c = channel
         if (c == null || groupLocked) {
-            if (key == Key.DirectionLeft) { drawerOnMenu = false; drawerOpen = true; return true }
+            if (key == Key.DirectionLeft) { drawerOnMenu = false; railOpen = false; drawerOpen = true; return true }
             return false
         }
         when (key) {
@@ -308,7 +313,7 @@ fun GuideScreen(
                 return true
             }
             Key.DirectionLeft -> {
-                if (onChannelCol) { drawerOnMenu = false; drawerOpen = true; return true }
+                if (onChannelCol) { drawerOnMenu = false; railOpen = false; drawerOpen = true; return true }
                 val cell = cellAt(c, focusTime)
                 val nowFloor = System.currentTimeMillis() / HALF_HOUR * HALF_HOUR
                 // Browsing into the past only makes sense on channels with catch-up.
@@ -324,7 +329,7 @@ fun GuideScreen(
                     // Left while looking at past programs: back to now first.
                     !held && cell.end <= System.currentTimeMillis() -> resetToNow()
                     // TiviMate: Left from the current program opens the groups list.
-                    else -> { drawerOnMenu = false; drawerOpen = true }
+                    else -> { drawerOnMenu = false; railOpen = false; drawerOpen = true }
                 }
                 return true
             }
@@ -366,7 +371,7 @@ fun GuideScreen(
         val scrolled = onChannelCol || !onNow || windowStart != nowT / HALF_HOUR * HALF_HOUR
         when {
             // Back on the groups opens the menu (second slider); Back on the menu exits (twice).
-            drawerOpen && !railFocused -> railFocusRequest++
+            drawerOpen && !railOpen -> { railOpen = true; railFocusRequest++ }
             drawerOpen -> {
                 val now = System.currentTimeMillis()
                 if (now - lastBackInMenu < 2500) (context as? android.app.Activity)?.finish()
@@ -378,7 +383,7 @@ fun GuideScreen(
             settings.bool("guide.back_to_current") && scrolled -> resetToNow()
             // TiviMate: Back from the guide returns to the channel playing full screen.
             // Back opens the side panel (groups); hold Back for full screen.
-            else -> { drawerOnMenu = false; drawerOpen = true }
+            else -> { drawerOnMenu = false; railOpen = false; drawerOpen = true }
         }
     }
 
@@ -392,8 +397,8 @@ fun GuideScreen(
                 val go = { menuFor = c to g }
                 if (settings.premium && settings.bool("parental.enabled") && settings.bool(lock)) pinFor = go else go()
             }
-            "groups" -> { drawerOnMenu = false; drawerOpen = true }
-            "side_menu" -> { drawerOnMenu = true; drawerOpen = true }
+            "groups" -> { drawerOnMenu = false; railOpen = false; drawerOpen = true }
+            "side_menu" -> { drawerOnMenu = true; railOpen = true; drawerOpen = true }
             "next_programs" -> handleKey(Key.DirectionRight)
             "page_up" -> handleKey(Key.PageUp)
             "page_down" -> handleKey(Key.PageDown)
@@ -566,7 +571,7 @@ fun GuideScreen(
         // TiviMate: the side menu doesn't cover the guide, it pushes the whole guide to the right
         // (first the icons + groups; Left again opens the menu with labels and pushes it further).
         val drawerShown = (drawerOpen && playlists?.isEmpty() != true && !background) || (background && menuBehind && playlists?.isEmpty() != true)
-        val railExpandedNow = (background && menuBehind) || railFocused || groups.isEmpty()
+        val railExpandedNow = (background && menuBehind) || railOpen || groups.isEmpty()
         val push by androidx.compose.animation.core.animateDpAsState(
             if (!drawerShown) 0.dp else (if (railExpandedNow) RAIL_OPEN else RAIL_CLOSED) + GROUPS_COL,
             androidx.compose.animation.core.tween(280, easing = androidx.compose.animation.core.FastOutSlowInEasing), label = "push")
@@ -624,6 +629,8 @@ fun GuideScreen(
                 focusDest = menuReturn,
                 expanded = railExpandedNow,
                 onRailFocus = { railFocused = it },
+                onOpenRail = { railOpen = true; railFocusRequest++ },
+                onCloseRail = { railOpen = false },
                 passive = background,
                 railFocusRequest = railFocusRequest,
             )
@@ -653,6 +660,8 @@ fun GuideScreen(
                     .background(Color.Black.copy(alpha = 0.7f)).padding(horizontal = 20.dp, vertical = 8.dp))
         }
     }
+
+    LaunchedEffect(drawerOpen) { if (!drawerOpen) railOpen = false }
 
     LaunchedEffect(numberBuffer) {
         if (numberBuffer.isEmpty()) return@LaunchedEffect
@@ -1068,6 +1077,8 @@ private fun SideDrawer(
     /** Shown behind Settings: just a picture, never takes the remote. */
     passive: Boolean = false,
     railFocusRequest: Int = 0,
+    onOpenRail: () -> Unit = {},
+    onCloseRail: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val groupFocus = remember { FocusRequester() }
@@ -1077,6 +1088,14 @@ private fun SideDrawer(
     var myListOpen by remember { mutableStateOf(false) }
     val subFocus = remember { FocusRequester() }
     val destFocus = remember { FocusRequester() }
+    val firstMenuFocus = remember { FocusRequester() }
+    val settingsRowFocus = remember { FocusRequester() }
+    val jumpFocus = remember { FocusRequester() }
+    var focusedGroup by remember { mutableIntStateOf(groupIndex) }
+    var jumpTo by remember { mutableIntStateOf(-1) }
+    var groupsFocused by remember { mutableStateOf(false) }
+    // The menu only takes the remote once it's opened (second slider), never by accident on the first.
+    val railFocusable = Modifier.focusProperties { canFocus = railExpanded }
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = (groupIndex - 4).coerceAtLeast(0))
     val colors = MaterialTheme.colorScheme
     val railBg = colors.surfaceVariant
@@ -1097,7 +1116,7 @@ private fun SideDrawer(
                     when (e.key) {
                         Key.DirectionRight -> {
                             if (myListOpen) runCatching { subFocus.requestFocus() }
-                            else if (groups.isNotEmpty()) runCatching { groupFocus.requestFocus() }.onFailure { onClose() }
+                            else if (groups.isNotEmpty()) runCatching { groupFocus.requestFocus(); onCloseRail() }.onFailure { onClose() }
                             else onClose()
                             true
                         }
@@ -1115,10 +1134,14 @@ private fun SideDrawer(
                 if (railExpanded) Text(context.getString(com.novatv.app.R.string.app_name), fontSize = 18.sp,
                     fontWeight = FontWeight.Bold, color = Color(0xFFFFD666), maxLines = 1, modifier = Modifier.padding(start = 12.dp))
             }
-            MAIN_MENU.forEach { d ->
+            MAIN_MENU.forEachIndexed { mi, d ->
                 TvRow(
-                    modifier = if (d == MenuDest.GUIDE) Modifier.focusRequester(menuFocus)
-                        else if (d == focusDest) Modifier.focusRequester(destFocus) else Modifier,
+                    modifier = railFocusable.then(if (d == MenuDest.GUIDE) Modifier.focusRequester(menuFocus)
+                        else if (d == focusDest) Modifier.focusRequester(destFocus) else Modifier)
+                        // Up on the top item goes round to the bottom (Settings), like TiviMate.
+                        .then(if (mi == 0) Modifier.focusRequester(firstMenuFocus).onPreviewKeyEvent { e ->
+                            if (e.type == KeyEventType.KeyDown && e.key == Key.DirectionUp) { runCatching { settingsRowFocus.requestFocus() }; true } else false
+                        } else Modifier),
                     selected = d == MenuDest.GUIDE || (d == MenuDest.MY_LIST && myListOpen),
                     onFocused = { myListOpen = d == MenuDest.MY_LIST },
                     onClick = { if (d == MenuDest.MY_LIST) myListOpen = true else onMenu(d) },
@@ -1129,7 +1152,12 @@ private fun SideDrawer(
                 }
             }
             Spacer(Modifier.weight(1f))
-            TvRow(modifier = if (focusDest == MenuDest.SETTINGS) Modifier.focusRequester(destFocus) else Modifier,
+            TvRow(modifier = railFocusable.then(if (focusDest == MenuDest.SETTINGS) Modifier.focusRequester(destFocus) else Modifier)
+                    .focusRequester(settingsRowFocus)
+                    // Down on the bottom item goes round to the top.
+                    .onPreviewKeyEvent { e ->
+                        if (e.type == KeyEventType.KeyDown && e.key == Key.DirectionDown) { runCatching { firstMenuFocus.requestFocus() }; true } else false
+                    },
                 onClick = { onMenu(MenuDest.SETTINGS) }, onFocused = { myListOpen = false }) {
                 androidx.compose.material3.Icon(menuIcon(MenuDest.SETTINGS), null, tint = rowContentColor(), modifier = Modifier.size(22.dp))
                 if (railExpanded) Text("Settings", fontSize = 16.sp, color = rowContentColor(), modifier = Modifier.padding(start = 16.dp))
@@ -1153,17 +1181,22 @@ private fun SideDrawer(
                 .padding(start = 12.dp, end = 12.dp, top = 250.dp, bottom = 12.dp)) {
                 LazyColumn(
                     state = listState,
-                    modifier = Modifier.onPreviewKeyEvent { e ->
+                    modifier = Modifier.onFocusChanged { groupsFocused = it.hasFocus }.onPreviewKeyEvent { e ->
                         if (e.type != KeyEventType.KeyDown) false
                         else if (e.key == Key.DirectionRight) { onClose(); true }
-                        // Left goes to "TV" in the menu (not whichever menu row happens to be nearest).
-                        else if (e.key == Key.DirectionLeft) { myListOpen = false; runCatching { menuFocus.requestFocus() }; true }
+                        // Left opens the menu (second slider) and goes to "TV" in it.
+                        else if (e.key == Key.DirectionLeft) { myListOpen = false; onOpenRail(); true }
+                        // Top and bottom wrap round, like TiviMate.
+                        else if (e.key == Key.DirectionUp && focusedGroup == 0 && groups.size > 1) { jumpTo = groups.lastIndex; true }
+                        else if (e.key == Key.DirectionDown && focusedGroup == groups.lastIndex && groups.size > 1) { jumpTo = 0; true }
                         else false
                     },
                 ) {
                     itemsIndexed(groups) { i, g ->
                         TvRow(
-                            modifier = if (i == groupIndex) Modifier.focusRequester(groupFocus) else Modifier,
+                            modifier = (if (i == groupIndex) Modifier.focusRequester(groupFocus) else Modifier)
+                                .then(if (i == jumpTo) Modifier.focusRequester(jumpFocus) else Modifier),
+                            onFocused = { focusedGroup = i },
                             selected = i == groupIndex,
                             onClick = { onGroup(i) },
                         ) {
@@ -1179,13 +1212,28 @@ private fun SideDrawer(
     LaunchedEffect(railFocusRequest) {
         if (passive || railFocusRequest == 0) return@LaunchedEffect
         myListOpen = false
+        delay(20) // let the menu become focusable first
         runCatching { menuFocus.requestFocus() }
+    }
+    LaunchedEffect(jumpTo) {
+        if (jumpTo < 0) return@LaunchedEffect
+        listState.scrollToItem(jumpTo)
+        delay(20)
+        runCatching { jumpFocus.requestFocus() }
+        jumpTo = -1
     }
     LaunchedEffect(Unit) {
         if (passive) return@LaunchedEffect
         delay(30)
         if (focusDest != null && focusDest != MenuDest.GUIDE && runCatching { destFocus.requestFocus() }.isSuccess) return@LaunchedEffect
-        if (groups.isNotEmpty() && !focusMenu) runCatching { groupFocus.requestFocus() } else runCatching { menuFocus.requestFocus() }
+        if (groups.isNotEmpty() && !focusMenu) {
+            // The list may still be sliding in: keep trying until the remote is on the group.
+            repeat(15) {
+                if (groupsFocused) return@LaunchedEffect
+                runCatching { groupFocus.requestFocus() }
+                delay(30)
+            }
+        } else runCatching { menuFocus.requestFocus() }
     }
 }
 
