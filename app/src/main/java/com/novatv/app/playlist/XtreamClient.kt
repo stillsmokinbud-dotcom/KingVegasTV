@@ -33,8 +33,11 @@ class XtreamClient(private val http: OkHttpClient) {
         val maxConn = info?.get("max_connections")?.str()?.toIntOrNull() ?: 0
         if (status != null && status != "1") throw IOException("Xtream login failed. Check username and password.")
 
-        val categories = get("$api&action=get_live_categories", userAgent).arrayOrEmpty()
+        val catList = get("$api&action=get_live_categories", userAgent).arrayOrEmpty()
+        val categories = catList
             .associate { it.jsonObject["category_id"].str() to (it.jsonObject["category_name"].str() ?: "Uncategorized") }
+        // The provider's own category order (what TiviMate shows): index in get_live_categories.
+        val catOrder = catList.mapIndexed { i, el -> el.jsonObject["category_id"].str() to i }.toMap()
 
         val ext = if (p.xtreamOutput == "m3u8") "m3u8" else "ts"
         val adult = Regex("""(?i)\b(xxx|adult|18\+)\b""")
@@ -57,6 +60,7 @@ class XtreamClient(private val http: OkHttpClient) {
                 catchupDays = if (archive) o["tv_archive_duration"].str()?.toIntOrNull() ?: 0 else 0,
                 catchupSource = if (archive) "xc" else null,
                 isAdult = o["is_adult"].str() == "1" || adult.containsMatchIn(group),
+                groupOrder = catOrder[o["category_id"].str()] ?: Int.MAX_VALUE,
             )
         }
         return PlaylistContent(channels, epgUrl = "$base/xmltv.php?username=$user&password=$pass", expDate = expDate, maxConnections = maxConn)
