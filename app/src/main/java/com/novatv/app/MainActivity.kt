@@ -214,7 +214,7 @@ private fun AppRoot(settings: AppSettings, onFinish: () -> Unit) {
     fun navigate(dest: MenuDest) {
         when (dest) {
             MenuDest.GUIDE -> while (stack.size > 1) pop()
-            MenuDest.SEARCH -> push(Screen.Search)
+            MenuDest.SEARCH -> { app.searchQuery = ""; app.searchFocus = null; push(Screen.Search) }
             MenuDest.MOVIES -> push(Screen.Vod(com.novatv.app.playlist.VodKind.MOVIES))
             MenuDest.SHOWS -> push(Screen.Vod(com.novatv.app.playlist.VodKind.SHOWS))
             MenuDest.RECORDINGS -> push(Screen.Recordings)
@@ -243,6 +243,8 @@ private fun AppRoot(settings: AppSettings, onFinish: () -> Unit) {
     LaunchedEffect(Unit) {
         while (true) {
             delay(15_000)
+            // Sleep timer (set in the player's menu): time's up -> the app closes, even from the guide.
+            if (app.sleepAt > 0L && System.currentTimeMillis() >= app.sleepAt) { app.sleepAt = 0L; onFinish() }
             app.recordings.tick()
             val st = app.lastSettings
             if (dueReminder == null) app.reminders.takeDue(beforeMs = (st?.int("epg.reminder_before") ?: 0) * 60_000L)
@@ -277,7 +279,7 @@ private fun AppRoot(settings: AppSettings, onFinish: () -> Unit) {
                 push(Screen.Player(channel.id))
             }, onOpenVod = { item, isMovie ->
                 push(if (isMovie) Screen.MovieDetails(item) else Screen.Series(item))
-            })
+            }, onOpenSettings = { openSettings("other.search") })
             is Screen.Info -> InfoScreen(screen.title, screen.text)
             is Screen.AddPlaylist -> AddPlaylistScreen(
                 type = screen.type,
@@ -327,7 +329,8 @@ private fun AppRoot(settings: AppSettings, onFinish: () -> Unit) {
                 screen.fromStart, onExit = ::pop)
             is Screen.Player -> PlayerScreen(settings, screen.channelId, onExit = ::pop,
                 onNavigate = { d -> pop(); navigate(d) },
-                onFinishApp = onFinish)
+                onFinishApp = onFinish,
+                canExitToGuide = stack.getOrNull(stack.lastIndex - 1) == Screen.Home)
         }
     }
 
