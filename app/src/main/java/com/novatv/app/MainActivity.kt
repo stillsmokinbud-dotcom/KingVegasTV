@@ -76,6 +76,30 @@ class MainActivity : ComponentActivity() {
         ) runCatching { enterPictureInPictureMode(android.app.PictureInPictureParams.Builder().build()) }
     }
 
+    /** Leaving the app (Home, Back out, another app): no sound keeps playing in the background. PiP keeps playing. */
+    override fun onStop() {
+        super.onStop()
+        val pip = android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N && isInPictureInPictureMode
+        if (!pip) com.novatv.app.player.PlayerFactory.suspendAll()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        com.novatv.app.player.PlayerFactory.resumeAll()
+    }
+
+    /** Closing the picture-in-picture window stops the video too. */
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: android.content.res.Configuration) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        if (!isInPictureInPictureMode && !lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED))
+            com.novatv.app.player.PlayerFactory.suspendAll()
+    }
+
+    override fun onDestroy() {
+        if (isFinishing) com.novatv.app.player.PlayerFactory.stopAll()
+        super.onDestroy()
+    }
+
     private val systemLocale: java.util.Locale = java.util.Locale.getDefault()
 
     @Suppress("DEPRECATION")
