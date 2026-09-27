@@ -351,7 +351,7 @@ fun PlayerScreen(
     Box(
         Modifier
             .fillMaxSize()
-            .background(Color.Black)
+            // See-through: the shared picture underneath shows here.
             .focusRequester(rootFocus)
             .onKeyEvent { e ->
                 if (overlay != Overlay.NONE) return@onKeyEvent false
@@ -414,28 +414,35 @@ fun PlayerScreen(
         val screenW = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp.toFloat()
         val screenH = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.toFloat()
         val g = grow.value
-        AndroidView(
-            factory = { ctx ->
-                PlayerView(ctx).apply {
-                    layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
-                    useController = false
-                    keepScreenOn = true
-                    isFocusable = false
-                    descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
-                    // Settings › Player › "Show black screen when switching channels"
-                    setKeepContentOnPlayerReset(!blackOnSwitch)
-                    this.player = player
-                }
-            },
-            update = { it.resizeMode = resizeModeFor(aspect); it.setKeepContentOnPlayerReset(!blackOnSwitch) },
-            onRelease = { it.player = null },
-            modifier = if (g < 1f) Modifier.align(Alignment.TopStart)
-                .padding(start = (24 * (1 - g)).dp, top = (18 * (1 - g)).dp)
-                .width((356 + (screenW - 356) * g).dp).height((200 + (screenH - 200) * g).dp)
-            else Modifier.align(Alignment.TopEnd)
-                .padding(top = (40 * shrink).dp, end = (40 * shrink).dp)
-                .fillMaxWidth(1f - 0.55f * shrink).fillMaxHeight(1f - 0.55f * shrink),
-        )
+        // The picture itself is the app-wide shared video (VideoStage); this screen just places it:
+        // growing out of the guide preview, full screen, or shrunk top-right for the channels list.
+        val dens = androidx.compose.ui.platform.LocalDensity.current
+        val fullW = with(dens) { screenW.dp.toPx() }
+        val fullH = with(dens) { screenH.dp.toPx() }
+        val from = com.novatv.app.ui.VideoStage.lastPreview
+            ?: with(dens) { androidx.compose.ui.geometry.Rect(24.dp.toPx(), 18.dp.toPx(), 380.dp.toPx(), 218.dp.toPx()) }
+        val full = androidx.compose.ui.geometry.Rect(0f, 0f, fullW, fullH)
+        val target = if (g < 1f) androidx.compose.ui.geometry.lerp(from, full, g) else {
+            val k = 1f - 0.55f * shrink
+            val m = with(dens) { (40 * shrink).dp.toPx() }
+            androidx.compose.ui.geometry.Rect(fullW - fullW * k - m, m, fullW - m, m + fullH * k)
+        }
+        val token = remember { com.novatv.app.ui.VideoStage.claim(target) }
+        androidx.compose.runtime.SideEffect {
+            com.novatv.app.ui.VideoStage.move(token, target)
+            com.novatv.app.ui.VideoStage.resizeMode.value = resizeModeFor(aspect)
+            // Settings › Player › "Show black screen when switching channels"
+            com.novatv.app.ui.VideoStage.keepContent.value = !blackOnSwitch
+            com.novatv.app.ui.VideoStage.keepScreenOn.value = true
+        }
+        DisposableEffect(Unit) {
+            onDispose {
+                com.novatv.app.ui.VideoStage.keepScreenOn.value = false
+                com.novatv.app.ui.VideoStage.resizeMode.value = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                com.novatv.app.ui.VideoStage.keepContent.value = true
+                com.novatv.app.ui.VideoStage.release(token)
+            }
+        }
         // Settings › Player › Clock (always on screen while watching)
         if (settings.bool("appearance.show_clock") && overlay == Overlay.NONE && !bannerVisible) PlayerClock(settings)
 
