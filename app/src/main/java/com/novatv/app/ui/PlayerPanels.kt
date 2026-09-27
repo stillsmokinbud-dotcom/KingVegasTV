@@ -318,7 +318,17 @@ internal fun PlayerMenuRow(
 ) {
     val fr = remember { FocusRequester() }
     BackHandler { onDismiss() }
-    Box(Modifier.fillMaxSize().focusProperties { exit = { FocusRequester.Cancel } }.focusGroup()) {
+    // Like TiviMate: the menu hides by itself after a few seconds without a key press,
+    // and Up / Down close it straight away (back to the picture).
+    var lastKey by remember { mutableIntStateOf(0) }
+    LaunchedEffect(lastKey) { kotlinx.coroutines.delay(8000); onDismiss() }
+    Box(Modifier.fillMaxSize()
+        .onPreviewKeyEvent { e ->
+            if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+            lastKey++
+            if (e.key == Key.DirectionUp || e.key == Key.DirectionDown) { onDismiss(); true } else false
+        }
+        .focusProperties { exit = { FocusRequester.Cancel } }.focusGroup()) {
         Row(
             Modifier.align(Alignment.TopCenter).fillMaxWidth()
                 .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.55f), Color.Transparent)))
