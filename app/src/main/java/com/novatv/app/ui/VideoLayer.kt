@@ -4,6 +4,7 @@ import android.view.ViewGroup
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -56,7 +57,24 @@ object VideoStage {
 @Composable
 fun SharedVideoLayer(settings: AppSettings) {
     val app = LocalContext.current.app
-    val built = remember { app.shared.obtain(settings) }
+    val built = remember(com.novatv.app.player.PlayerFactory.signature(settings)) { app.shared.obtain(settings) }
+    // TiviMate keeps the TV awake whenever live TV is playing, in the guide preview too.
+    // (Before, only full screen did, so the TV / Fire Stick went to sleep after ~20 minutes
+    // in the guide and the app was closed.)
+    val ctx = LocalContext.current
+    DisposableEffect(built.player) {
+        var c: android.content.Context? = ctx
+        while (c is android.content.ContextWrapper && c !is android.app.Activity) c = c.baseContext
+        val window = (c as? android.app.Activity)?.window
+        val l = object : androidx.media3.common.Player.Listener {
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (isPlaying) window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                else if (!VideoStage.keepScreenOn.value) window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            }
+        }
+        built.player.addListener(l)
+        onDispose { built.player.removeListener(l) }
+    }
     val rect by VideoStage.rect
     var last by remember { mutableStateOf<Rect?>(null) }
     if (rect != null) last = rect
@@ -72,22 +90,10 @@ fun SharedVideoLayer(settings: AppSettings) {
                 descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
                 setShutterBackgroundColor(android.graphics.Color.BLACK)
                 player = built.player
-                // TiviMate keeps the TV awake whenever live TV is playing, in the guide preview too.
-                // (Before, only full screen did, so the TV / Fire Stick went to sleep after ~20 minutes
-                // in the guide and the app was closed.)
-                built.player.addListener(object : androidx.media3.common.Player.Listener {
-                    override fun onIsPlayingChanged(isPlaying: Boolean) {
-                        var c: android.content.Context? = ctx
-                        while (c is android.content.ContextWrapper && c !is android.app.Activity) c = c.baseContext
-                        (c as? android.app.Activity)?.window?.let { w ->
-                            if (isPlaying) w.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-                            else if (!VideoStage.keepScreenOn.value) w.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-                        }
-                    }
-                })
             }
         },
         update = {
+            if (it.player !== built.player) it.player = built.player
             it.resizeMode = VideoStage.resizeMode.value
             it.setKeepContentOnPlayerReset(VideoStage.keepContent.value)
             it.keepScreenOn = VideoStage.keepScreenOn.value && !hidden
