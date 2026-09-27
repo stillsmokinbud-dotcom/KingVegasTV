@@ -585,7 +585,7 @@ fun GuideScreen(
                 }
                 "rec" -> {
                     app.recordings.schedule(c, cell.title, cell.start, cell.end)
-                    info = "Recording scheduled" to "${cell.title} on ${c.name} will be recorded while King Vegas TV is running. " +
+                    info = "Recording scheduled" to "${cell.title} on ${c.name} will be recorded while KINGVEGAS TV is running. " +
                         "Find it under Recordings in the menu."
                 }
                 else -> Unit
@@ -942,7 +942,7 @@ private fun Welcome(onAdd: () -> Unit, onSettings: () -> Unit, background: Boole
             modifier = Modifier.size(96.dp).clip(RoundedCornerShape(18.dp)),
         )
         Spacer(Modifier.height(20.dp))
-        Text("King Vegas TV does not provide any content", fontSize = 18.sp, fontWeight = FontWeight.Medium,
+        Text("KINGVEGAS TV does not provide any content", fontSize = 18.sp, fontWeight = FontWeight.Medium,
             color = MaterialTheme.colorScheme.onBackground)
         Text("Add your own playlist to start watching", fontSize = 15.sp,
             color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.75f), modifier = Modifier.padding(top = 4.dp))
