@@ -99,7 +99,8 @@ class EpgRepository(
                 return@withContext Result.failure(IOException(errors.joinToString("\n")))
             }
 
-            val result = EpgData(parser.finish(), HashMap(parser.nameToId), now)
+            val result = EpgData(parser.finish(), HashMap(parser.nameToId), now, HashMap(parser.icons))
+            runCatching { writeIcons(result.icons) }
             _data.value = result
             settingsRepo.set(KEY_LAST_STATUS, "EPG is successfully updated for ${result.byId.size} channels on $stamp")
             runCatching { writeCache(cacheFile, result) }
@@ -124,7 +125,7 @@ class EpgRepository(
                 ?: throw IOException("Can't open the file")
             val merged = HashMap(_data.value.byId).apply { putAll(parser.finish()) }
             val names = HashMap(_data.value.nameToId).apply { putAll(parser.nameToId) }
-            val result = EpgData(merged, names, now)
+            val result = EpgData(merged, names, now, HashMap(_data.value.icons).apply { putAll(parser.icons) })
             _data.value = result
             writeCache(cacheFile, result)
             n
@@ -165,8 +166,15 @@ class EpgRepository(
                 repeat(n) { list += Program(i.readLong(), i.readLong(), i.readUTF(), i.readUTF()) }
                 byId[id] = list
             }
-            EpgData(byId, names, updated)
+            EpgData(byId, names, updated, readIcons())
         }
+
+    private val iconsFile get() = File(context.filesDir, "epg_icons.txt")
+    private fun writeIcons(m: Map<String, String>) =
+        iconsFile.writeText(m.entries.joinToString("\n") { "${it.key}\t${it.value}" })
+    private fun readIcons(): Map<String, String> = runCatching {
+        iconsFile.readLines().mapNotNull { l -> l.split('\t', limit = 2).takeIf { it.size == 2 }?.let { it[0] to it[1] } }.toMap()
+    }.getOrDefault(emptyMap())
 
     companion object {
         /** Settings › EPG › Latest update status. */
