@@ -25,8 +25,10 @@ const DEVICE_LIMIT = +(env.DEVICE_LIMIT || 10);
 const DATA_DIR = env.DATA_DIR || path.join(__dirname, 'data');
 const STRIPE_KEY = env.STRIPE_SECRET_KEY || '';
 const STRIPE_WEBHOOK_SECRET = env.STRIPE_WEBHOOK_SECRET || '';
-const TEST_MODE = !STRIPE_KEY;
+// Cash App ($cashtag) payments: the customer pays you directly, you approve the order in /admin.
+const DEFAULT_CASHTAG = String(env.CASHTAG ?? 'kingvegastv').replace(/^\$/, '').trim();
 const stripe = STRIPE_KEY ? require('stripe')(STRIPE_KEY) : null;
+const QRCode = require('qrcode');
 const DAY = 86400e3;
 const LIFETIME = 253402300799000; // year 9999
 
@@ -60,6 +62,11 @@ CREATE TABLE IF NOT EXISTS tokens (
   created INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS orders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE NOT NULL, user_id INTEGER NOT NULL, plan TEXT NOT NULL,
+  amount INTEGER NOT NULL, method TEXT NOT NULL DEFAULT 'cashapp', status TEXT NOT NULL DEFAULT 'pending', -- pending | approved | rejected | cancelled
+  created INTEGER NOT NULL, decided INTEGER
+);
 CREATE TABLE IF NOT EXISTS revoked (user_id INTEGER NOT NULL, device_id TEXT NOT NULL, PRIMARY KEY (user_id, device_id));
 CREATE TABLE IF NOT EXISTS payments (
   id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, plan TEXT, amount INTEGER, ref TEXT, created INTEGER
@@ -74,6 +81,12 @@ function prices() {
   return out;
 }
 const money = c => `$${(c / 100).toFixed(2)}`;
+function cashtag() {
+  const r = db.prepare(`SELECT v FROM settings WHERE k = 'cashtag'`).get();
+  return (r ? r.v : DEFAULT_CASHTAG).replace(/^\$/, '').trim();
+}
+/** Test mode = no way to take real money yet (no Stripe key and no $cashtag): purchases are simulated. */
+const testMode = () => !stripe && !cashtag();
 const PLAN_LABEL = { none: 'Free', monthly: 'Monthly', yearly: 'Yearly', lifetime: 'Lifetime', gift: 'Given by admin' };
 
 // ------------------------------------------------------------------ passwords, tokens, users
@@ -286,7 +299,7 @@ app.delete('/api/devices/:id', (req, res) => {
 
 app.get('/api/plans', (req, res) => {
   const p = prices();
-  res.json({ testMode: TEST_MODE, deviceLimit: DEVICE_LIMIT, buyUrl: `${PUBLIC_URL}/account`,
+  res.json({ testMode: testMode(), deviceLimit: DEVICE_LIMIT, buyUrl: `${PUBLIC_URL}/account`,
     plans: [{ id: 'monthly', price: p.monthly }, { id: 'yearly', price: p.yearly }, { id: 'lifetime', price: p.lifetime }] });
 });
 
@@ -321,7 +334,7 @@ function page(title, body, user) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(title)} · ${esc(APP_NAME)}</title><style>${css}</style></head><body><div class="wrap">
 <header><div class="logo">${esc(APP_NAME)} Premium</div>${user ? `${isAdmin(user) ? '<a href="/admin">Admin</a>' : ''}<a href="/account">My account</a><a href="/logout">Sign out</a>` : '<a href="/login">Sign in</a><a class="btn" href="/signup">Create account</a>'}</header>
-${TEST_MODE ? '<div class="warn"><b>Test mode.</b> Stripe isn’t connected yet, so purchases are simulated and nobody is charged.</div>' : ''}
+${testMode() ? '<div class="warn"><b>Test mode.</b> No payment method is set up yet, so purchases are simulated and nobody is charged.</div>' : ''}
 ${body}</div></body></html>`;
 }
 const FEATURES = ['Multiple playlists', 'Recording (live, scheduled, recurring)', 'Catch-up TV', 'Multiview (up to 4 channels)',
@@ -330,7 +343,9 @@ const FEATURES = ['Multiple playlists', 'Recording (live, scheduled, recurring)'
 function plansHtml(user) {
   const p = prices();
   const card = (id, name, sub, best) => `<div class="plan${best ? ' best' : ''}"><div class="muted">${name}</div><div class="price">${money(p[id])}</div><div class="muted">${sub}</div>
-    ${user ? `<form method="post" action="/checkout/${id}"><button style="width:100%">Choose ${name}</button></form>` : `<a class="btn" href="/signup?plan=${id}">Get ${name}</a>`}</div>`;
+    ${!user ? `<a class="btn" href="/signup?plan=${id}">Get ${name}</a>` : `
+      ${cashtag() ? `<form method="post" action="/checkout/cashapp/${id}"><button style="width:100%;background:#00c244">Pay with Cash App</button></form>` : ''}
+      ${stripe || testMode() ? `<form method="post" action="/checkout/${id}"><button style="width:100%"${cashtag() ? ' class="gray"' : ''}>${stripe ? 'Pay with card' : `Choose ${name}`}</button></form>` : ''}`}</div>`;
   return `<div class="plans">${card('monthly', 'Monthly', 'per month · cancel anytime')}${card('yearly', 'Yearly', 'per year', true)}${card('lifetime', 'Lifetime', 'pay once, keep forever')}</div>`;
 }
 function setSession(res, userId) {
@@ -393,6 +408,8 @@ app.get('/account', (req, res) => {
     : '<p class="muted">No devices yet. Sign in inside the app to add one.</p>';
   res.send(page('My account', `<div class="card"><h2 style="margin-top:0">${esc(u.email)}</h2><p>${status}</p>
     ${u.stripe_subscription && stripe ? '<form method="post" action="/billing"><button class="gray">Manage billing / cancel</button></form>' : ''}</div>
+    ${db.prepare(`SELECT * FROM orders WHERE user_id = ? AND status = 'pending' ORDER BY created DESC`).all(u.id).map(o =>
+      `<div class="warn">Order <b>${esc(o.code)}</b> · ${esc(PLAN_LABEL[o.plan])} · ${money(o.amount)} is waiting for payment. <a href="/pay/${esc(o.code)}">Show payment details</a></div>`).join('')}
     ${a.premium && (u.plan === 'lifetime' || isAdmin(u)) ? '' : `<h3>${a.premium ? 'Change or extend your plan' : 'Get Premium'}</h3>${plansHtml(u)}`}
     <div class="card" style="margin-top:18px"><h3 style="margin-top:0">Devices (${a.devices.length} of ${DEVICE_LIMIT})</h3>${devices}</div>
     <div class="card"><h3 style="margin-top:0">Sign in on your TV box</h3><p class="muted">Open the app › Settings › Premium account › Sign in, and use this email and password.</p></div>`, u));
@@ -405,7 +422,7 @@ app.post('/account/devices/:id/remove', (req, res) => {
 // ---- checkout
 app.post('/checkout/test-complete', (req, res) => {
   const u = requireUser(req, res); if (!u) return;
-  if (!TEST_MODE) return res.status(403).send('Not in test mode');
+  if (!testMode()) return res.status(403).send('Not in test mode');
   const plan = req.body.plan;
   if (!['monthly', 'yearly', 'lifetime'].includes(plan)) return res.status(400).send('Unknown plan');
   extendPremium(u, plan, plan === 'monthly' ? 31 : plan === 'yearly' ? 366 : 'lifetime');
@@ -417,7 +434,7 @@ app.post('/checkout/:plan', async (req, res) => {
   const plan = req.params.plan;
   const p = prices();
   if (!['monthly', 'yearly', 'lifetime'].includes(plan)) return res.status(400).send('Unknown plan');
-  if (TEST_MODE) {
+  if (testMode()) {
     return res.send(page('Test checkout', `<div class="card" style="max-width:520px"><h2 style="margin-top:0">Test checkout</h2>
       <p>${esc(PLAN_LABEL[plan])} · ${money(p[plan])}</p><p class="muted">Stripe isn’t connected, so this simulates a successful payment.</p>
       <form method="post" action="/checkout/test-complete"><input type="hidden" name="plan" value="${plan}"><button>Simulate successful payment</button></form></div>`, u));
@@ -437,6 +454,56 @@ app.post('/checkout/:plan', async (req, res) => {
         success_url: `${PUBLIC_URL}/checkout/success`, cancel_url: `${PUBLIC_URL}/account` });
   res.redirect(303, session.url);
 });
+// ---- Cash App checkout: shows a QR code to pay $cashtag the exact amount with an order code in the note.
+const PLAN_DAYS = { monthly: 31, yearly: 366, lifetime: 'lifetime' };
+function newOrderCode() {
+  for (;;) {
+    const code = 'KV-' + String(crypto.randomInt(1000, 10000));
+    if (!db.prepare('SELECT 1 FROM orders WHERE code = ?').get(code)) return code;
+  }
+}
+app.post('/checkout/cashapp/:plan', (req, res) => {
+  const u = requireUser(req, res); if (!u) return;
+  const plan = req.params.plan;
+  if (!PLAN_DAYS[plan] || !cashtag()) return res.status(400).send(page('Checkout', '<div class="err">Cash App payments are not available.</div>', u));
+  // Reuse an open order for the same plan instead of piling up codes.
+  const open = db.prepare(`SELECT * FROM orders WHERE user_id = ? AND plan = ? AND status = 'pending'`).get(u.id, plan);
+  const code = open ? open.code : newOrderCode();
+  if (!open) db.prepare('INSERT INTO orders (code, user_id, plan, amount, created) VALUES (?, ?, ?, ?, ?)').run(code, u.id, plan, prices()[plan], Date.now());
+  res.redirect(303, `/pay/${code}`);
+});
+app.get('/pay/:code', async (req, res) => {
+  const u = requireUser(req, res); if (!u) return;
+  const o = db.prepare('SELECT * FROM orders WHERE code = ? AND user_id = ?').get(String(req.params.code), u.id);
+  if (!o) return res.status(404).send(page('Payment', '<div class="err">Order not found.</div><a href="/account">Back</a>', u));
+  if (o.status === 'approved') return res.send(page('Payment', `<div class="card"><h2 style="margin-top:0">Payment received — you’re Premium 🎉</h2>
+    <p>Order ${esc(o.code)} · ${esc(PLAN_LABEL[o.plan])}. Your TV box picks it up automatically (or open Settings › Premium account).</p><a class="btn" href="/account">My account</a></div>`, u));
+  if (o.status !== 'pending') return res.send(page('Payment', `<div class="card"><h2 style="margin-top:0">Order ${esc(o.code)} was ${esc(o.status)}</h2>
+    <p class="muted">If you already paid, contact us with your order code.</p><a class="btn" href="/account">Back</a></div>`, u));
+  const tag = cashtag();
+  const amount = (o.amount / 100).toFixed(2);
+  const link = `https://cash.app/$${encodeURIComponent(tag)}/${amount}`;
+  const qr = await QRCode.toString(link, { type: 'svg', margin: 1, width: 260, color: { dark: '#000000', light: '#ffffff' } });
+  res.send(page('Pay with Cash App', `<meta http-equiv="refresh" content="20">
+    <div class="card" style="max-width:560px;margin:0 auto;text-align:center">
+      <h2 style="margin-top:0">Pay ${money(o.amount)} with Cash App</h2>
+      <p>${esc(PLAN_LABEL[o.plan])} Premium · to <b>$${esc(tag)}</b></p>
+      <div style="background:#fff;border-radius:12px;display:inline-block;padding:10px;width:280px">${qr}</div>
+      <p style="margin:14px 0 6px">1. Scan with your phone camera (or tap the button on your phone)</p>
+      <a class="btn" style="background:#00c244" href="${esc(link)}">Open Cash App</a>
+      <p style="margin:18px 0 6px">2. In the <b>note</b> ("For"), type this code:</p>
+      <div style="font-size:34px;font-weight:800;letter-spacing:2px">${esc(o.code)}</div>
+      <p style="margin:18px 0 6px">3. Send exactly <b>${money(o.amount)}</b>. We activate Premium as soon as the payment is confirmed.</p>
+      <p class="muted">This page updates by itself. Status: <b>waiting for payment</b></p>
+      <form method="post" action="/pay/${esc(o.code)}/cancel"><button class="gray">Cancel this order</button></form>
+    </div>`, u));
+});
+app.post('/pay/:code/cancel', (req, res) => {
+  const u = requireUser(req, res); if (!u) return;
+  db.prepare(`UPDATE orders SET status = 'cancelled', decided = ? WHERE code = ? AND user_id = ? AND status = 'pending'`).run(Date.now(), String(req.params.code), u.id);
+  res.redirect('/account');
+});
+
 app.get('/checkout/success', (req, res) => {
   const u = webUser(req);
   res.send(page('Thank you', `<div class="card"><h2 style="margin-top:0">You’re Premium 🎉</h2><p>Open the app on your TV box › Settings › Premium account › Sign in with ${u ? esc(u.email) : 'your email'}.</p>
@@ -494,7 +561,20 @@ app.get('/admin', (req, res) => {
         ${!isAdmin(u) && isPremium(u) ? `<form class="inline" method="post" action="/admin/users/${u.id}/revoke"><button class="red">Remove Premium</button></form>` : ''}
         <form class="inline" method="post" action="/admin/users/${u.id}/signout"><button class="gray">Sign out devices</button></form></td></tr>`;
   }).join('');
-  res.send(page('Admin', `<div class="row" style="margin-bottom:18px"><div class="card" style="flex:1;margin:0"><div class="muted">Accounts</div><div class="price">${total}</div></div>
+  const pending = db.prepare(`SELECT o.*, u.email FROM orders o JOIN users u ON u.id = o.user_id WHERE o.status = 'pending' ORDER BY o.created`).all();
+  const recent = db.prepare(`SELECT o.*, u.email FROM orders o JOIN users u ON u.id = o.user_id WHERE o.status != 'pending' ORDER BY o.decided DESC LIMIT 10`).all();
+  const ordersHtml = `<div class="card"><h3 style="margin-top:0">Cash App payments waiting (${pending.length})</h3>
+    ${pending.length ? `<p class="muted">Check your Cash App: find a payment of the amount below with the order code in the note, then press Approve.</p>
+    <table><tr><th>Code</th><th>Account</th><th>Plan</th><th>Amount</th><th>Ordered</th><th></th></tr>${pending.map(o => `<tr>
+      <td><b>${esc(o.code)}</b></td><td>${esc(o.email)}</td><td>${esc(PLAN_LABEL[o.plan])}</td><td>${money(o.amount)}</td><td>${new Date(o.created).toLocaleString()}</td>
+      <td><form class="inline" method="post" action="/admin/orders/${o.id}/approve"><button style="background:#00c244">Approve</button></form>
+          <form class="inline" method="post" action="/admin/orders/${o.id}/reject"><button class="red">Reject</button></form></td></tr>`).join('')}</table>`
+      : '<p class="muted">No payments waiting.</p>'}
+    ${recent.length ? `<details style="margin-top:10px"><summary class="muted">Recent orders</summary><table>${recent.map(o => `<tr><td>${esc(o.code)}</td><td>${esc(o.email)}</td>
+      <td>${esc(PLAN_LABEL[o.plan])}</td><td>${money(o.amount)}</td><td>${esc(o.status)}</td></tr>`).join('')}</table></details>` : ''}
+    <form class="row" method="post" action="/admin/cashtag" style="margin-top:12px"><label style="flex:1">Your Cash App $cashtag (leave empty to turn Cash App off)
+      <input name="cashtag" value="${esc(cashtag() ? '$' + cashtag() : '')}" placeholder="$yourcashtag"></label><button class="gray">Save</button></form></div>`;
+  res.send(page('Admin', `${ordersHtml}<div class="row" style="margin-bottom:18px"><div class="card" style="flex:1;margin:0"><div class="muted">Accounts</div><div class="price">${total}</div></div>
     <div class="card" style="flex:1;margin:0"><div class="muted">Premium now</div><div class="price">${premiumCount}</div></div>
     <div class="card" style="flex:1;margin:0"><div class="muted">Revenue (real payments)</div><div class="price">${money(revenue)}</div></div></div>
     <div class="card"><h3 style="margin-top:0">Add a subscriber</h3><form class="row" method="post" action="/admin/users">
@@ -537,6 +617,29 @@ app.post('/admin/users/:id/signout', (req, res) => {
   db.prepare('DELETE FROM devices WHERE user_id = ?').run(+req.params.id);
   res.redirect('/admin');
 });
+app.post('/admin/orders/:id/approve', (req, res) => {
+  const me = requireAdmin(req, res); if (!me) return;
+  const o = db.prepare(`SELECT * FROM orders WHERE id = ? AND status = 'pending'`).get(+req.params.id);
+  const u = o && userById(o.user_id);
+  if (o && u) {
+    extendPremium(u, o.plan, PLAN_DAYS[o.plan]);
+    db.prepare(`UPDATE orders SET status = 'approved', decided = ? WHERE id = ?`).run(Date.now(), o.id);
+    db.prepare('INSERT INTO payments (user_id, plan, amount, ref, created) VALUES (?, ?, ?, ?, ?)').run(u.id, o.plan, o.amount, `CASHAPP ${o.code}`, Date.now());
+  }
+  res.redirect('/admin');
+});
+app.post('/admin/orders/:id/reject', (req, res) => {
+  const me = requireAdmin(req, res); if (!me) return;
+  db.prepare(`UPDATE orders SET status = 'rejected', decided = ? WHERE id = ? AND status = 'pending'`).run(Date.now(), +req.params.id);
+  res.redirect('/admin');
+});
+app.post('/admin/cashtag', (req, res) => {
+  const me = requireAdmin(req, res); if (!me) return;
+  const tag = String(req.body.cashtag || '').replace(/^\$/, '').trim().slice(0, 40);
+  if (tag && !/^[A-Za-z0-9_-]+$/.test(tag)) return res.status(400).send(page('Admin', '<div class="err">That doesn’t look like a $cashtag.</div><a href="/admin">Back</a>', me));
+  db.prepare('INSERT INTO settings (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v').run('cashtag', tag);
+  res.redirect('/admin');
+});
 app.post('/admin/prices', (req, res) => {
   const me = requireAdmin(req, res); if (!me) return;
   for (const k of ['monthly', 'yearly', 'lifetime']) {
@@ -546,11 +649,11 @@ app.post('/admin/prices', (req, res) => {
   res.redirect('/admin');
 });
 
-app.get('/health', (req, res) => res.json({ ok: true, testMode: TEST_MODE }));
+app.get('/health', (req, res) => res.json({ ok: true, testMode: testMode() }));
 
 app.use((err, req, res, next) => { console.error(err); res.status(500).send(page('Error', `<div class="err">Something went wrong: ${esc(err.message)}</div>`)); });
 
 app.listen(PORT, () => {
-  console.log(`${APP_NAME} license server on ${PUBLIC_URL} ${TEST_MODE ? '(TEST MODE — no Stripe key)' : ''}`);
+  console.log(`${APP_NAME} license server on ${PUBLIC_URL} ${testMode() ? '(TEST MODE — no payment method)' : ''}`);
   if (!ADMIN_EMAIL) console.log('Tip: set ADMIN_EMAIL and ADMIN_PASSWORD to create your admin account.');
 });
