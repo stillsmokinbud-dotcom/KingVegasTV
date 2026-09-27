@@ -247,6 +247,9 @@ private fun AppRoot(settings: AppSettings, onFinish: () -> Unit) {
         }
     }
 
+    // New version on GitHub -> "Update available" pop-up (not over the full-screen player).
+    com.novatv.app.update.UpdatePrompt(show = stack.last() !is Screen.Player && stack.last() !is Screen.VodPlayer)
+
     dueReminder?.let { r ->
         com.novatv.app.ui.ReminderPopup(r, onWatch = {
             dueReminder = null
