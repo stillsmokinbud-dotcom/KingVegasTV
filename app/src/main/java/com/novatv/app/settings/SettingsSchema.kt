@@ -431,7 +431,7 @@ object SettingsSchema {
             )),
             SubmenuItem("appearance.player_info", "Info panel", listOf(
                 ToggleItem("player.info_card", "Card style", false),
-                ToggleItem("player.info_bottom", "Show info panel at the bottom when switching channels", false),
+                ToggleItem("player.info_bottom", "Show info panel at the bottom when switching channels", true),
                 ToggleItem("appearance.show_clock_info", "Show clock", true),
                 ToggleItem("player.info_date", "Show date on clock", true, visibleWhen = "appearance.show_clock_info"),
                 ToggleItem("player.info_playlist_group", "Show playlist and group name", true),
