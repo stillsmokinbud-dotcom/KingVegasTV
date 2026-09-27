@@ -83,7 +83,7 @@ fun PlayerScreen(
     val app = context.app
     val repo = app.playlists
     val scope = rememberCoroutineScope()
-    val queue = remember { app.playQueue }
+    var queue by remember { mutableStateOf(app.playQueue) }
     if (queue.isEmpty()) {
         LaunchedEffect(Unit) { onExit() }
         return
@@ -107,6 +107,12 @@ fun PlayerScreen(
     val favorites by remember(DataKeys.FAVORITES) { app.settings.listFlow(DataKeys.FAVORITES) }.collectAsState(initial = emptyList())
     val epg by app.epg.data.collectAsState()
     val rootFocus = remember { FocusRequester() }
+    val allChannels by repo.channels.collectAsState()
+    val recentIds by remember(DataKeys.RECENT) { app.settings.listFlow(DataKeys.RECENT) }.collectAsState(initial = emptyList())
+    val recent = remember(recentIds, allChannels) {
+        val byId = allChannels.associateBy { it.id }
+        recentIds.mapNotNull { byId[it] }
+    }
 
     val built = remember { PlayerFactory(context, repo.http).create(settings, DEFAULT_USER_AGENT) }
     val player = built.player
@@ -114,7 +120,7 @@ fun PlayerScreen(
     val overlayAlpha = (1f - settings.int("appearance.overlay_opacity") / 100f).coerceIn(0.25f, 1f)
     DisposableEffect(Unit) { app.playerActive = true; onDispose { app.playerActive = false } }
     // Watch time (Channels sorting › By watch time)
-    LaunchedEffect(index) {
+    LaunchedEffect(channel.id) {
         while (true) { delay(60_000); if (player.isPlaying) repo.addWatchTime(channel.id, 60) }
     }
 
@@ -126,7 +132,7 @@ fun PlayerScreen(
     }
 
     // Start / switch channel
-    LaunchedEffect(index) {
+    LaunchedEffect(channel.id) {
         val pl = repo.playlistFor(channel)
         val ua = channel.userAgent?.takeIf { it.isNotBlank() } ?: repo.userAgentFor(pl, settings)
         built.dataSource.setUserAgent(ua)
@@ -137,13 +143,14 @@ fun PlayerScreen(
         player.playWhenReady = true
         stopped = false
         bannerTick++
+        app.lastPlayedId = channel.id
         delay(settings.int("recent.delay") * 1000L)
         repo.markWatched(channel)
     }
 
     // Freeze watchdog: if the picture (or the whole stream) stops moving while the player says it is
     // playing, reconnect to the channel. Catches the "picture frozen, sound still playing" case.
-    LaunchedEffect(index) {
+    LaunchedEffect(channel.id) {
         var lastFrames = -1
         var lastPos = -1L
         var stuck = 0
@@ -381,56 +388,41 @@ fun PlayerScreen(
             modifier = Modifier.fillMaxSize(),
         )
 
-        // Channel info bar with now / next from the TV guide
-        if (bannerVisible && (overlay == Overlay.NONE || overlay == Overlay.CONTROL)) {
-            val channel = peekIndex?.let { queue[it] } ?: channel
-            val t0 = System.currentTimeMillis()
-            val nowProg = epg.at(channel, t0)
-            val nextProg = epg.nextAfter(channel, nowProg?.end ?: t0)
-            Row(
-                Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.92f * overlayAlpha + 0.05f))))
-                    .padding(start = 40.dp, end = 40.dp, top = 40.dp, bottom = 30.dp),
-                verticalAlignment = Alignment.Bottom,
-                horizontalArrangement = Arrangement.spacedBy(22.dp),
-            ) {
-                ChannelLogo(settings, channel, 96.dp)
-                Column(Modifier.weight(1f)) {
-                    val num = if (settings.bool("channels.show_numbers")) channel.number?.let { "$it  " } ?: "" else ""
-                    val where = if (settings.bool("player.info_playlist_group")) "  ·  ${channel.group}" else ""
-                    Text("$num${channel.name}$where" + if (peekIndex != null) "  ·  press OK to watch" else "",
-                        fontSize = 15.sp, color = Color.White.copy(alpha = 0.75f), maxLines = 1)
-                    Text(nowProg?.title ?: "No information", fontSize = 24.sp, fontWeight = FontWeight.Medium, color = Color.White,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(vertical = 4.dp))
-                    if (nowProg != null) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Text(timeText(nowProg.start, settings, context), fontSize = 14.sp, color = Color.White.copy(alpha = 0.8f))
-                            ProgressBar((t0 - nowProg.start).toFloat() / (nowProg.end - nowProg.start), Modifier.width(420.dp))
-                            Text(timeText(nowProg.end, settings, context), fontSize = 14.sp, color = Color.White.copy(alpha = 0.8f))
-                            Text("${(nowProg.end - t0) / 60_000} min left", fontSize = 14.sp, color = Color.White.copy(alpha = 0.8f))
-                        }
+        // TiviMate-style info panel: passive after a channel change, interactive (controls + tiles) on OK.
+        if ((bannerVisible && overlay == Overlay.NONE) || overlay == Overlay.CONTROL) {
+            val shownChannel = peekIndex?.let { queue.getOrNull(it) } ?: channel
+            PlayerInfoPanel(
+                settings = settings, channel = shownChannel, epg = epg, player = player,
+                interactive = overlay == Overlay.CONTROL, peek = peekIndex != null, isPlaying = player.isPlaying,
+                recent = recent.filter { it.id != channel.id },
+                onAction = { a ->
+                    when (a) {
+                        "dismiss" -> overlay = Overlay.NONE
+                        "guide" -> { overlay = Overlay.NONE; onExit() }
+                        "history" -> { overlay = Overlay.NONE; onNavigate(MenuDest.HISTORY) }
+                        "clear_history" -> scope.launch { app.settings.setList(DataKeys.RECENT, listOf(channel.id)) }
+                        "prev" -> switchTo(index - 1)
+                        "next" -> switchTo(index + 1)
+                        "rew" -> player.seekBack()
+                        "ffwd" -> player.seekForward()
+                        "play" -> action("play_pause")
+                        "live" -> action("go_live")
+                        "restart" -> action("restart")
+                        "record" -> action("record")
+                        "menu" -> overlay = Overlay.MENU
                     }
-                    if (nowProg != null && settings.bool("player.info_desc") && nowProg.desc.isNotBlank()) {
-                        Text(nowProg.desc, fontSize = 14.sp, color = Color.White.copy(alpha = 0.7f), maxLines = 2,
-                            overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
-                    }
-                    if (nextProg != null) {
-                        Text("Next: ${timeText(nextProg.start, settings, context)}  ${nextProg.title}", fontSize = 14.sp,
-                            color = Color.White.copy(alpha = 0.65f), maxLines = 1, overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(top = 6.dp))
-                    }
-                }
-                if (settings.bool("appearance.show_clock_info")) {
-                    Text(timeText(t0, settings, context), fontSize = 20.sp, color = Color.White.copy(alpha = 0.85f))
-                }
-            }
+                },
+                onPlayRecent = { c ->
+                    overlay = Overlay.NONE
+                    val i = queue.indexOfFirst { it.id == c.id }
+                    if (i >= 0) switchTo(i) else { queue = allChannels; switchTo(allChannels.indexOfFirst { it.id == c.id }.coerceAtLeast(0)) }
+                },
+            )
         }
 
         if (numberBuffer.isNotEmpty()) {
-            Text(numberBuffer, fontSize = 48.sp, fontWeight = FontWeight.Bold, color = Color.White,
-                modifier = Modifier.align(Alignment.TopEnd).padding(32.dp))
+            Text(numberBuffer, fontSize = 56.sp, fontWeight = FontWeight.Bold, color = Color.White,
+                modifier = Modifier.align(Alignment.TopStart).padding(start = 48.dp, top = 40.dp))
         }
 
         error?.let {
@@ -439,35 +431,58 @@ fun PlayerScreen(
                     .background(Color.Black.copy(alpha = 0.7f)).padding(16.dp))
         }
 
-        if (overlay == Overlay.CHANNELS) {
-            ChannelListOverlay(
-                settings, queue, epg, index, favorites, overlayAlpha,
-                onPick = { switchTo(it); overlay = Overlay.NONE },
-                onLong = { i -> if (settings.premium) scope.launch { app.settings.toggleInList(DataKeys.FAVORITES, queue[i].id) } else paywall = "Favorites" },
+        androidx.compose.animation.AnimatedVisibility(
+            visible = overlay == Overlay.CHANNELS,
+            enter = androidx.compose.animation.slideInHorizontally(androidx.compose.animation.core.tween(190)) { -it / 4 } +
+                androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(150)),
+            exit = androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(120)),
+        ) {
+            PlayerChannelList(
+                settings = settings, allChannels = allChannels, queue = queue, current = index, epg = epg, favorites = favorites,
+                onPick = { list, i ->
+                    overlay = Overlay.NONE
+                    if (list !== queue) {
+                        queue = list; app.playQueue = list; previousIndex = null; index = i.coerceIn(list.indices)
+                    } else switchTo(i)
+                },
+                onPlayArchive = { title, url -> overlay = Overlay.NONE; playUrl(title, url) },
+                onLong = { c -> if (settings.premium) scope.launch { app.settings.toggleInList(DataKeys.FAVORITES, c.id) } else paywall = "Favorites" },
+                onDismiss = { overlay = Overlay.NONE },
             )
+        }
+
+        if (overlay == Overlay.MENU) {
+            val fav = channel.id in favorites
+            val v = player.videoFormat
+            val a = player.audioFormat
+            val labels = mapOf(
+                "video_tracks" to (v?.takeIf { it.width > 0 }?.let { "${it.width} × ${it.height}" }),
+                "audio_tracks" to (a?.let { f ->
+                    val lang = f.language?.takeIf { it.isNotBlank() && it != "und" }?.let { java.util.Locale(it).displayLanguage } ?: "Audio"
+                    val ch = when (f.channelCount) { 1 -> "mono"; 2 -> "stereo"; 6 -> "5.1 surround sound"; 8 -> "7.1 surround sound"; else -> "" }
+                    if (ch.isEmpty()) lang else "$lang\n$ch"
+                }),
+                "audio_offset" to "0 ms",
+                "captions" to (if (player.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)) "Off" else "On"),
+                "display_mode" to when (aspect) { "fill" -> "Stretch"; "zoom" -> "Zoom"; "16_9" -> "16:9"; "4_3" -> "4:3"; else -> "Normal" },
+                "sleep_timer" to (if (sleepMinutes > 0) "$sleepMinutes min" else "Off"),
+                "favorite" to (if (fav) "Remove from Favorites" else "Add to Favorites"),
+            )
+            val savedOrder by remember(DataKeys.MENU_ORDER) { app.settings.listFlow(DataKeys.MENU_ORDER) }.collectAsState(initial = emptyList())
+            val ids = PLAYER_MENU_BUTTONS.map { it.first }
+            val order = savedOrder.filter { it in ids } + ids.filter { it !in savedOrder }
+            val buttons = order.filter { settings.bool("player.btn.$it") }.map { id ->
+                id to (labels[id] ?: PLAYER_MENU_BUTTONS.first { it.first == id }.second)
+            }
+            PlayerMenuRow(buttons, ::menuButtonIcon, onDismiss = { overlay = Overlay.NONE }) { id ->
+                overlay = Overlay.NONE
+                action(when (id) { "channels" -> "channels_overlay"; else -> id })
+            }
         }
     }
 
     // Menus
     when (overlay) {
-        Overlay.MENU -> PlayerMenuBar(settings, onDismiss = { overlay = Overlay.NONE }) { id ->
-            overlay = Overlay.NONE
-            action(when (id) { "channels" -> "channels_overlay"; else -> id })
-        }
-        Overlay.CONTROL -> ControlPanel(
-            isPlaying = player.isPlaying,
-            onDismiss = { overlay = Overlay.NONE },
-        ) { c ->
-            when (c) {
-                "prev" -> switchTo(index - 1)
-                "next" -> switchTo(index + 1)
-                "play" -> action("play_pause")
-                "rew" -> player.seekBack()
-                "ffwd" -> player.seekForward()
-                "restart" -> action("restart")
-                "record" -> action("record")
-            }
-        }
         Overlay.DESCRIPTION -> {
             val p = epg.at(channel, System.currentTimeMillis())
             MessageDialog(p?.title ?: channel.name, p?.desc?.ifBlank { null } ?: "No description") { overlay = Overlay.NONE }
