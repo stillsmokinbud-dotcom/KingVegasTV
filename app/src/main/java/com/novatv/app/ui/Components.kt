@@ -63,6 +63,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.foundation.focusGroup
+import androidx.compose.foundation.focusable
 import androidx.compose.ui.window.Dialog
 
 /** True while the surrounding [TvRow] has focus (lets row content pick readable colors). */
@@ -412,14 +413,85 @@ fun TextDialog(
 }
 
 @Composable
-fun PinDialog(correctPin: String, onDismiss: () -> Unit, onSuccess: () -> Unit) {
+fun PinDialog(correctPin: String, forChannels: Boolean = false, onDismiss: () -> Unit, onSuccess: () -> Unit) {
+    val app = androidx.compose.ui.platform.LocalContext.current.let { it.applicationContext as com.novatv.app.App }
+    val s = app.lastSettings
+    // Parental controls › "Don't require PIN after unlocking" (and "… for channels only").
+    val duration = s?.str("parental.unlock_duration") ?: "always"
+    val windowApplies = duration != "always" && (forChannels || s?.bool("parental.channels_only") != true)
+    val stillUnlocked = windowApplies && app.pinUnlockedAt > 0 && when (duration) {
+        "session" -> true
+        else -> System.currentTimeMillis() - app.pinUnlockedAt < (duration.toLongOrNull() ?: 0) * 60_000L
+    }
+    if (stillUnlocked) { LaunchedEffect(Unit) { onSuccess() }; return }
+    val ok = { app.pinUnlockedAt = System.currentTimeMillis(); onSuccess() }
     var error by remember { mutableStateOf(false) }
+    // Parental controls › PIN input method: Picker (digits with Up/Down) or Keyboard.
+    if (s?.str("parental.pin_method") != "keyboard") {
+        PinPickerDialog(if (error) "Wrong PIN, try again" else "Enter PIN", correctPin.length.coerceIn(4, 8), onDismiss) {
+            if (it == correctPin) ok() else error = true
+        }
+        return
+    }
     TextDialog(
         title = if (error) "Wrong PIN, try again" else "Enter PIN",
         value = "", secret = true, numeric = true,
         onDismiss = onDismiss,
-        onDone = { if (it == correctPin) onSuccess() else error = true },
+        onDone = { if (it == correctPin) ok() else error = true },
     )
+}
+
+/** PIN picker: one box per digit; Up/Down change it, Left/Right move, number keys type, OK confirms. */
+@Composable
+private fun PinPickerDialog(title: String, length: Int, onDismiss: () -> Unit, onDone: (String) -> Unit) {
+    val digits = remember(title) { androidx.compose.runtime.mutableStateListOf<Int>().apply { repeat(length) { add(0) } } }
+    var pos by remember(title) { mutableIntStateOf(0) }
+    val fr = remember { FocusRequester() }
+    TvDialog(title, onDismiss) {
+        Row(
+            Modifier.padding(vertical = 12.dp).focusRequester(fr)
+                .onPreviewKeyEvent { e ->
+                    if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent e.key != Key.Back
+                    when (e.key) {
+                        Key.DirectionUp -> { digits[pos] = (digits[pos] + 1) % 10; true }
+                        Key.DirectionDown -> { digits[pos] = (digits[pos] + 9) % 10; true }
+                        Key.DirectionLeft -> { pos = (pos - 1).coerceAtLeast(0); true }
+                        Key.DirectionRight -> { pos = (pos + 1).coerceAtMost(length - 1); true }
+                        Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> { onDone(digits.joinToString("")); true }
+                        Key.Back -> false
+                        else -> {
+                            val d = digitOf(e.key)
+                            if (d != null) {
+                                digits[pos] = d.toString().toInt()
+                                if (pos < length - 1) pos++ else onDone(digits.joinToString(""))
+                                true
+                            } else false
+                        }
+                    }
+                }
+                .focusable(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            for (i in 0 until length) {
+                val on = i == pos
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("▲", fontSize = 12.sp, color = if (on) MaterialTheme.colorScheme.onSurface else Color.Transparent)
+                    Box(
+                        Modifier.size(52.dp, 60.dp).clip(RoundedCornerShape(8.dp))
+                            .background(if (on) Color.White else MaterialTheme.colorScheme.surfaceVariant),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text("${digits[i]}", fontSize = 26.sp, fontWeight = FontWeight.Bold,
+                            color = if (on) Color(0xFF16181C) else MaterialTheme.colorScheme.onSurface)
+                    }
+                    Text("▼", fontSize = 12.sp, color = if (on) MaterialTheme.colorScheme.onSurface else Color.Transparent)
+                }
+            }
+        }
+        Text("Up/Down change the digit · Left/Right move · OK to confirm", fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+    }
+    AutoFocus(fr)
 }
 
 @Composable
