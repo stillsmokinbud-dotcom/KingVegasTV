@@ -266,7 +266,7 @@ private fun AppRoot(settings: AppSettings, onFinish: () -> Unit) {
             is Screen.Settings -> {
                 // TiviMate: Settings slides in from the right over the screen you came from.
                 if (stack.getOrNull(stack.lastIndex - 1) == Screen.Home) com.novatv.app.ui.NoFocus {
-                    GuideScreen(settings = settings, onPlay = { _, _ -> }, onNavigate = {}, onAddPlaylist = {}, background = true)
+                    GuideScreen(settings = settings, onPlay = { _, _ -> }, onNavigate = {}, onAddPlaylist = {}, background = true, menuBehind = true)
                 }
                 SettingsScreen(settings, screen.page, onClose = ::pop) { action ->
                 when (action) {
