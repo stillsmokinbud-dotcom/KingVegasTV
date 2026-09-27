@@ -75,6 +75,12 @@ class App : Application() {
                 com.novatv.app.settings.RemoteKeys.PLAYER_KEYS.forEach { settings.set(com.novatv.app.settings.RemoteKeys.playerKey(it.id), it.default) }
                 settings.set("data.remote_reset_v1", "done")
             }
+            // One time: groups exactly like TiviMate (provider order, no "Recently watched" group).
+            if (settings.current().str("data.groups_like_tivimate_v1") != "done") {
+                settings.set("general.recent_group", "false")
+                settings.set("groups.sort", "playlist")
+                settings.set("data.groups_like_tivimate_v1", "done")
+            }
             // One time: the channel info panel shows at the bottom (like TiviMate) for everyone.
             if (settings.current().str("data.info_bottom_v1") != "done") {
                 settings.set("player.info_bottom", "true")
