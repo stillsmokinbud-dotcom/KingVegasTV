@@ -53,6 +53,7 @@ import com.novatv.app.premium.Reminder
 import com.novatv.app.settings.AppSettings
 import java.text.DateFormat
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import java.util.Date
 
 /** Plays a URL full screen (catch-up, recordings): (title, url). Provided by MainActivity. */
@@ -143,8 +144,17 @@ fun RemindersScreen() {
 
 /** Pop-up when a reminded program starts. */
 @Composable
-fun ReminderPopup(r: Reminder, onWatch: () -> Unit, onDismiss: () -> Unit) {
-    ChoiceDialog("Starting now: ${r.title}", listOf("watch" to "Watch on ${r.channelName}", "no" to "Dismiss"), null, onDismiss) {
+fun ReminderPopup(r: Reminder, timeoutSec: Int = 10, defaultAction: String = "watch", onWatch: () -> Unit, onDismiss: () -> Unit) {
+    // Settings › Other › Reminders: after "Popup timeout" the "Default action" (Watch / Ignore) happens by itself.
+    var left by remember(r) { mutableIntStateOf(timeoutSec.coerceAtLeast(1)) }
+    LaunchedEffect(r) {
+        while (left > 0) { delay(1000); left-- }
+        if (defaultAction == "watch") onWatch() else onDismiss()
+    }
+    val soon = r.start > System.currentTimeMillis()
+    val act = if (defaultAction == "watch") "watching" else "closing"
+    ChoiceDialog((if (soon) "Starting soon: " else "Starting now: ") + r.title,
+        listOf("watch" to "Watch on ${r.channelName}", "no" to "Dismiss  ($act in ${left}s)"), null, onDismiss) {
         if (it == "watch") onWatch() else onDismiss()
     }
 }
@@ -234,31 +244,63 @@ fun HistoryScreen(settings: AppSettings, onPlay: (List<Channel>, Channel) -> Uni
     val app = context.app
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val all by app.playlists.channels.collectAsState()
-    val ids by remember { app.settings.listFlow(com.novatv.app.settings.DataKeys.RECENT) }.collectAsState(initial = emptyList())
-    val epg by app.epg.data.collectAsState()
-    val list = remember(ids, all) { val byId = all.associateBy { it.id }; ids.mapNotNull { byId[it] } }
+    val raw by remember { app.settings.listFlow(com.novatv.app.settings.DataKeys.HISTORY) }.collectAsState(initial = emptyList())
+    val playUrl = LocalPlayUrl.current
+    val now = System.currentTimeMillis()
+    data class Entry(val c: Channel, val start: Long, val end: Long, val watched: Long, val title: String)
+    // Settings › Appearance › Player › History: day count, current programs, past programs without catch-up.
+    val entries = remember(raw, all, settings) {
+        val byId = all.associateBy { it.id }
+        val from = now - settings.int("history.days").coerceAtLeast(1) * 86_400_000L
+        raw.mapNotNull { line ->
+            val p = line.split('|', limit = 5)
+            val c = byId[p.getOrNull(0)] ?: return@mapNotNull null
+            val e = Entry(c, p.getOrNull(1)?.toLongOrNull() ?: 0, p.getOrNull(2)?.toLongOrNull() ?: 0,
+                p.getOrNull(3)?.toLongOrNull() ?: 0, p.getOrNull(4).orEmpty())
+            if (e.watched < from) return@mapNotNull null
+            val current = e.start == 0L || (e.start <= now && e.end > now)
+            val past = e.end in 1..now
+            when {
+                current -> e.takeIf { settings.bool("history.show_current") }
+                past && (e.c.catchupDays > 0 || settings.bool("history.show_past_no_catchup")) -> e
+                else -> null
+            }
+        }
+    }
     val fr = remember { FocusRequester() }
+    val dayFmt = remember { java.text.SimpleDateFormat("EEEE, MMM d", java.util.Locale.getDefault()) }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(40.dp)) {
-        ScreenHeader("History", "Channels you watched recently")
-        if (list.isEmpty()) Text("Nothing watched yet.", fontSize = 15.sp, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f))
+        ScreenHeader("History", "What you watched in the last ${settings.int("history.days")} days")
+        if (entries.isEmpty()) Text("Nothing watched yet.", fontSize = 15.sp, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f))
         LazyColumn {
-            if (list.isNotEmpty()) item {
-                TvRow(onClick = { scope.launch { app.settings.setList(com.novatv.app.settings.DataKeys.RECENT, emptyList()) } }) {
+            if (entries.isNotEmpty()) item {
+                TvRow(onClick = { scope.launch { app.settings.setList(com.novatv.app.settings.DataKeys.HISTORY, emptyList()) } }) {
                     RowTitle("Clear history")
                 }
             }
-            items(list.size) { i ->
-                val c = list[i]
-                val p = epg.at(c, System.currentTimeMillis())
-                TvRow(modifier = if (i == 0) Modifier.focusRequester(fr) else Modifier, onClick = { onPlay(list, c) }) {
-                    ChannelLogo(settings, c, 44.dp)
-                    Column(Modifier.padding(start = 14.dp)) {
-                        Text((c.number?.let { "$it  " } ?: "") + c.name, fontSize = 16.sp, color = rowContentColor(), maxLines = 1)
-                        Text(p?.title ?: "No information", fontSize = 13.sp, color = rowContentColor(dimmed = true), maxLines = 1)
+            items(entries.size) { i ->
+                val e = entries[i]
+                val day = dayFmt.format(java.util.Date(e.watched))
+                if (i == 0 || dayFmt.format(java.util.Date(entries[i - 1].watched)) != day) {
+                    Text(day, fontSize = 14.sp, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(start = 8.dp, top = 12.dp, bottom = 4.dp))
+                }
+                val past = e.end in 1..now
+                TvRow(modifier = if (i == 0) Modifier.focusRequester(fr) else Modifier, onClick = {
+                    val url = if (past) com.novatv.app.premium.Catchup.url(e.c, e.start, e.end) else null
+                    if (url != null) playUrl("${e.c.name} · ${e.title}", url)
+                    else if (!past) onPlay(listOf(e.c), e.c)
+                }) {
+                    ChannelLogo(settings, e.c, 44.dp)
+                    Column(Modifier.padding(start = 14.dp).weight(1f)) {
+                        Text(e.title, fontSize = 16.sp, color = rowContentColor(dimmed = past && e.c.catchupDays <= 0), maxLines = 1)
+                        val time = if (e.start > 0) "${timeText(e.start, settings, context)} — ${timeText(e.end, settings, context)}" else ""
+                        Text(listOf((e.c.number?.let { "$it  " } ?: "") + e.c.name, time).filter { it.isNotBlank() }.joinToString("  ·  "),
+                            fontSize = 13.sp, color = rowContentColor(dimmed = true), maxLines = 1)
                     }
+                    if (past && e.c.catchupDays > 0) Text("↺", fontSize = 16.sp, color = rowContentColor(dimmed = true))
                 }
             }
         }
     }
-    AutoFocus(fr, list.size)
+    AutoFocus(fr, entries.size)
 }
