@@ -6,6 +6,12 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- In-app updates: open the Android installer for a downloaded new version -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Reminders › Wake up from sleep mode -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Logos folder / Recordings folder chosen in Settings -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
 
     <!-- Runs on TV boxes (no touchscreen) and still installs on phones/tablets -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
@@ -36,6 +42,8 @@
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <receiver android:name=".boot.ReminderWakeReceiver" android:exported="false" />
 
         <provider
             android:name="androidx.core.content.FileProvider"
