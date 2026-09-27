@@ -55,7 +55,7 @@ class PlaylistRepository(
 
     val playlists: Flow<List<Playlist>> = settingsRepo.settings.map { decodePlaylists(it.raw[DataKeys.PLAYLISTS]) }
 
-    private fun decodePlaylists(raw: String?): List<Playlist> =
+    fun decodePlaylists(raw: String?): List<Playlist> =
         raw?.let { runCatching { json.decodeFromString(playlistListSer, it) }.getOrNull() } ?: emptyList()
 
     suspend fun readPlaylists(): List<Playlist> = decodePlaylists(settingsRepo.current().raw[DataKeys.PLAYLISTS])
@@ -185,6 +185,10 @@ class PlaylistRepository(
         }
     }
 
+    /** Name of the channel's playlist (for the player's info panel). */
+    fun playlistNameFor(channel: Channel, s: AppSettings): String? =
+        decodePlaylists(s.raw[DataKeys.PLAYLISTS]).firstOrNull { it.id == channel.playlistId }?.name
+
     suspend fun playlistFor(channel: Channel): Playlist? =
         readPlaylists().firstOrNull { it.id == channel.playlistId }
 
@@ -246,7 +250,15 @@ class PlaylistRepository(
         fun isLocked(group: String, list: List<Channel>) =
             parental && (group in lockedGroups || (lockAdult && list.any { it.isAdult }))
 
-        var groupedMap = channels.groupBy { it.group }
+        // Several playlists: Appearance › Groups › Show "All playlists" category merges groups with the same
+        // name from every playlist; off, each playlist keeps its own groups ("Playlist · Group").
+        val pls = decodePlaylists(s.raw[DataKeys.PLAYLISTS])
+        val multi = pls.size > 1
+        val plName = pls.associate { it.id to it.name }
+        val plOrder = pls.mapIndexed { i, p -> p.id to i }.toMap()
+        var groupedMap = if (multi && !s.bool("groups.show_all_playlists"))
+            channels.groupBy { "${plName[it.playlistId] ?: "Playlist"} · ${it.group}" }
+        else channels.groupBy { it.group }
         if (s.str("groups.sort") == "name") groupedMap = groupedMap.toSortedMap(String.CASE_INSENSITIVE_ORDER)
         val grouped = groupedMap
             .filter { (g, _) -> showHidden || g !in hiddenGroups }
@@ -265,8 +277,10 @@ class PlaylistRepository(
             if (rec.isNotEmpty()) result += ChannelGroup("Recently watched", rec)
         }
         if (s.bool("channels.show_all_group")) {
-            val visible = grouped.filterNot { it.locked }.flatMap { it.channels }
-            result += ChannelGroup("All channels", visible)
+            var visible = grouped.filterNot { it.locked }.flatMap { it.channels }
+            // Channels › "Group channels by playlists in All playlists category"
+            if (multi && s.bool("channels.group_by_playlist")) visible = visible.sortedBy { plOrder[it.playlistId] ?: 0 }
+            result += ChannelGroup(if (multi) "All playlists" else "All channels", visible)
         }
         result += grouped
         return result
@@ -304,6 +318,21 @@ class PlaylistRepository(
 
     /** All group names across playlists (for the Hide groups / Locked groups screens). */
     fun allGroupNames(): List<String> = _channels.value.map { it.group }.distinct()
+
+    /**
+     * History (TiviMate): the programs you watched, newest first, as
+     * "channelId|programStart|programEnd|watchedAt|title" (no program info: start = end = 0).
+     */
+    suspend fun addHistory(channel: Channel, program: com.novatv.app.epg.Program?) {
+        val now = System.currentTimeMillis()
+        val start = program?.start ?: 0L
+        val entry = "${channel.id}|$start|${program?.end ?: 0L}|$now|${program?.title ?: channel.name}"
+        val old = settingsRepo.getList(DataKeys.HISTORY).filterNot {
+            val p = it.split('|', limit = 5)
+            p.getOrNull(0) == channel.id && p.getOrNull(1) == start.toString()
+        }
+        settingsRepo.setList(DataKeys.HISTORY, (listOf(entry) + old).take(500))
+    }
 
     suspend fun markWatched(channel: Channel) {
         val recent = listOf(channel.id) + settingsRepo.getList(DataKeys.RECENT).filterNot { it == channel.id }
