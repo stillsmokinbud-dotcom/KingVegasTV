@@ -174,14 +174,28 @@ fun GuideScreen(
     }
 
     // Guide cursor
-    var groupIndex by remember { mutableIntStateOf(0) }
-    var row by remember { mutableIntStateOf(0) }
+    // Reopen exactly where the guide was (and on the channel that's playing), so the very first frame
+    // is the real guide — not an empty group with a grey "No channels" screen for an instant.
+    val restored = remember {
+        val gs = app.guideGroups
+        val gi = app.guideGroupIndex.takeIf { it in gs.indices && gs[it].channels.isNotEmpty() }
+        if (gi == null) null else {
+            val at = gs[gi].channels.indexOfFirst { it.id == app.lastPlayedId }
+            gi to (if (at >= 0) at else app.guideRow.coerceIn(0, gs[gi].channels.lastIndex))
+        }
+    }
+    var groupIndex by remember { mutableIntStateOf(restored?.first ?: 0) }
+    var row by remember { mutableIntStateOf(restored?.second ?: 0) }
+    androidx.compose.runtime.SideEffect { app.guideGroupIndex = groupIndex; app.guideRow = row }
     var onChannelCol by remember { mutableStateOf(false) }
     var focusTime by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var windowStart by remember { mutableLongStateOf(System.currentTimeMillis() / HALF_HOUR * HALF_HOUR) }
-    var drawerOpen by remember { mutableStateOf(app.openGuideGroups.also { app.openGuideGroups = false }) }
-    var drawerOnMenu by remember { mutableStateOf(false) } // Back opens the drawer on the main menu, Left on the groups
-    var railFocused by remember { mutableStateOf(false) }
+    // Coming back from Settings / Movies / … (opened from the menu): TiviMate is still on the menu,
+    // on the item you picked — so the guide doesn't jump, the menu is simply still there.
+    val menuReturn = remember { if (background) null else app.guideMenuReturn.also { app.guideMenuReturn = null } }
+    var drawerOpen by remember { mutableStateOf(app.openGuideGroups.also { app.openGuideGroups = false } || menuReturn != null) }
+    var drawerOnMenu by remember { mutableStateOf(menuReturn != null) } // Back opens the drawer on the main menu, Left on the groups
+    var railFocused by remember { mutableStateOf(menuReturn != null) }
     var railFocusRequest by remember { mutableIntStateOf(0) } // bump to move the remote onto the side menu
     var backLongFired by remember { mutableStateOf(false) }
     var backDownSeen by remember { mutableStateOf(false) }
@@ -198,7 +212,7 @@ fun GuideScreen(
     val unlocked = remember { mutableStateOf(setOf<String>()) }
     val rootFocus = remember { FocusRequester() }
 
-    var groupChosen by remember { mutableStateOf(false) }
+    var groupChosen by remember { mutableStateOf(restored != null) }
     LaunchedEffect(groups) {
         if (groups.isEmpty()) return@LaunchedEffect
         val current = groups.getOrNull(groupIndex)
@@ -482,7 +496,9 @@ fun GuideScreen(
             // Guide background with a see-through window where the live preview picture sits.
             .drawBehind {
                 val bg = colors.background.copy(alpha = guideAlpha)
-                val r = VideoStage.rect.value
+                // Only the guide's own preview window is left open (never the full-screen picture that is
+                // still on its way from the player), so there is no flash when coming back to the guide.
+                val r = VideoStage.guideHole.value
                 if (overlayMode || r == null) drawRect(bg)
                 else {
                     val w = size.width; val h = size.height
@@ -556,7 +572,7 @@ fun GuideScreen(
         when {
             playlists?.isEmpty() == true -> Welcome(onAddPlaylist, onSettings = { onNavigate(MenuDest.SETTINGS) }, background = background)
             // Channels are there but the groups are still being sorted: show nothing for that instant.
-            (group == null || chs.isEmpty()) && channels.isNotEmpty() && groups.isEmpty() -> Unit
+            (group == null || chs.isEmpty()) && channels.isNotEmpty() && (groups.isEmpty() || !groupChosen) -> Unit
             group == null || chs.isEmpty() -> CenterMessage(
                 playlistStatus ?: "No channels here yet",
                 "Press Left for the menu",
@@ -596,9 +612,14 @@ fun GuideScreen(
                     groupIndex = i; row = 0; resetToNow(); drawerOpen = false
                     groups.getOrNull(i)?.let { g -> scope.launch { app.settings.set(DataKeys.LAST_GROUP, g.name) } }
                 },
-                onMenu = { d -> drawerOpen = false; if (d != MenuDest.GUIDE) onNavigate(d) },
+                onMenu = { d ->
+                    if (d == MenuDest.GUIDE) drawerOpen = false
+                    // Leave the menu open underneath: when that screen closes, the guide comes back as it was.
+                    else { app.guideMenuReturn = d; onNavigate(d) }
+                },
                 onClose = { drawerOpen = false },
                 focusMenu = drawerOnMenu,
+                focusDest = menuReturn,
                 expanded = railExpandedNow,
                 onRailFocus = { railFocused = it },
                 passive = background,
@@ -832,12 +853,12 @@ private fun PreviewVideo(settings: AppSettings, channel: Channel, instant: Boole
     // The picture is the app-wide shared video (VideoStage), placed exactly over this box; the box
     // itself is see-through. Nothing is torn down when you go full screen or open Settings.
     val token = remember { mutableIntStateOf(0) }
-    DisposableEffect(Unit) { onDispose { VideoStage.release(token.intValue) } }
+    DisposableEffect(Unit) { onDispose { if (!full) VideoStage.guideHole.value = null; VideoStage.release(token.intValue) } }
     Box(modifier.onGloballyPositioned { c ->
         val r = c.boundsInRoot()
         if (r.width > 0f && r.height > 0f) {
             if (token.intValue == 0) token.intValue = VideoStage.claim(r) else VideoStage.move(token.intValue, r)
-            if (!full) VideoStage.lastPreview = r
+            if (!full) { VideoStage.lastPreview = r; if (VideoStage.guideHole.value != r) VideoStage.guideHole.value = r }
         }
     })
 }
@@ -1033,6 +1054,8 @@ private fun SideDrawer(
     onMenu: (MenuDest) -> Unit,
     onClose: () -> Unit,
     focusMenu: Boolean = false,
+    /** Menu item to put the remote on when the drawer opens (the one you came back from). */
+    focusDest: MenuDest? = null,
     expanded: Boolean = false,
     onRailFocus: (Boolean) -> Unit = {},
     /** Shown behind Settings: just a picture, never takes the remote. */
@@ -1046,6 +1069,7 @@ private fun SideDrawer(
     DisposableEffect(Unit) { onDispose { onRailFocus(false) } }
     var myListOpen by remember { mutableStateOf(false) }
     val subFocus = remember { FocusRequester() }
+    val destFocus = remember { FocusRequester() }
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = (groupIndex - 4).coerceAtLeast(0))
     val colors = MaterialTheme.colorScheme
     val railBg = colors.surfaceVariant
@@ -1086,7 +1110,8 @@ private fun SideDrawer(
             }
             MAIN_MENU.forEach { d ->
                 TvRow(
-                    modifier = if (d == MenuDest.GUIDE) Modifier.focusRequester(menuFocus) else Modifier,
+                    modifier = if (d == MenuDest.GUIDE) Modifier.focusRequester(menuFocus)
+                        else if (d == focusDest) Modifier.focusRequester(destFocus) else Modifier,
                     selected = d == MenuDest.GUIDE || (d == MenuDest.MY_LIST && myListOpen),
                     onFocused = { myListOpen = d == MenuDest.MY_LIST },
                     onClick = { if (d == MenuDest.MY_LIST) myListOpen = true else onMenu(d) },
@@ -1097,7 +1122,8 @@ private fun SideDrawer(
                 }
             }
             Spacer(Modifier.weight(1f))
-            TvRow(onClick = { onMenu(MenuDest.SETTINGS) }, onFocused = { myListOpen = false }) {
+            TvRow(modifier = if (focusDest == MenuDest.SETTINGS) Modifier.focusRequester(destFocus) else Modifier,
+                onClick = { onMenu(MenuDest.SETTINGS) }, onFocused = { myListOpen = false }) {
                 androidx.compose.material3.Icon(menuIcon(MenuDest.SETTINGS), null, tint = rowContentColor(), modifier = Modifier.size(22.dp))
                 if (railExpanded) Text("Settings", fontSize = 16.sp, color = rowContentColor(), modifier = Modifier.padding(start = 16.dp))
             }
@@ -1151,6 +1177,7 @@ private fun SideDrawer(
     LaunchedEffect(Unit) {
         if (passive) return@LaunchedEffect
         delay(30)
+        if (focusDest != null && focusDest != MenuDest.GUIDE && runCatching { destFocus.requestFocus() }.isSuccess) return@LaunchedEffect
         if (groups.isNotEmpty() && !focusMenu) runCatching { groupFocus.requestFocus() } else runCatching { menuFocus.requestFocus() }
     }
 }
