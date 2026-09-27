@@ -94,6 +94,10 @@ fun AddPlaylistScreen(type: PlaylistType?, onPickType: (PlaylistType) -> Unit, o
     var editing by remember { mutableStateOf<AddField?>(null) }
     var message by remember { mutableStateOf<Pair<String, String>?>(null) }
     var channelCount by remember { mutableStateOf(0) }
+    // Movies / TV shows from this playlist: null = still loading, -1 = the playlist has none.
+    var movieCount by remember { mutableStateOf<Int?>(null) }
+    var showCount by remember { mutableStateOf<Int?>(null) }
+    val vodStatus by app.vod.status.collectAsState()
     val fr = remember { FocusRequester() }
 
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -126,6 +130,16 @@ fun AddPlaylistScreen(type: PlaylistType?, onPickType: (PlaylistType) -> Unit, o
                 channelCount = r.getOrNull() ?: 0
                 p = repo.readPlaylists().firstOrNull { it.id == named.id } ?: named
                 step = 1
+                // Load this playlist's movies and TV shows so the exact counts show on this screen.
+                val saved = p
+                if (saved.includeVod && app.vod.loginFor(saved) != null) {
+                    movieCount = null; showCount = null
+                    app.appScope.launch {
+                        runCatching { app.vod.refreshIfStale() }
+                        movieCount = app.vod.countFor(saved.id, com.novatv.app.playlist.VodKind.MOVIES)
+                        showCount = app.vod.countFor(saved.id, com.novatv.app.playlist.VodKind.SHOWS)
+                    }
+                } else { movieCount = -1; showCount = -1 }
             } else {
                 repo.delete(named.id)
                 message = updateResultMessage(r)
@@ -184,7 +198,13 @@ fun AddPlaylistScreen(type: PlaylistType?, onPickType: (PlaylistType) -> Unit, o
                 item { TvRow(onClick = { if (busy == null) next() }) { RowTitle("Next  ›") } }
             }
         } else {
-            ScreenHeader("Playlist is processed", "$channelCount channels loaded")
+            fun n(v: Int) = "%,d".format(v)
+            val vodLine = when {
+                movieCount == -1 -> "No movies or TV shows in this playlist"
+                movieCount == null -> (vodStatus ?: "Loading movies and TV shows…")
+                else -> "${n(movieCount!!)} movies loaded\n${n(showCount ?: 0)} TV shows loaded"
+            }
+            ScreenHeader("Playlist is processed", "${n(channelCount)} channels loaded\n$vodLine")
             LazyColumn {
                 item {
                     TvRow(modifier = Modifier.focusRequester(fr), onClick = { editing = AddField.NAME }) {
