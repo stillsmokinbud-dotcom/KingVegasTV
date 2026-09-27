@@ -24,6 +24,8 @@ class App : Application() {
         private set
     lateinit var vod: com.novatv.app.playlist.VodRepository
         private set
+    /** Live player shared by the full-screen player and the guide preview (seamless switching). */
+    val shared by lazy { com.novatv.app.player.SharedPlayback(this, playlists.http) }
     lateinit var reminders: com.novatv.app.premium.ReminderStore
         private set
     lateinit var recordings: com.novatv.app.premium.RecordingManager
