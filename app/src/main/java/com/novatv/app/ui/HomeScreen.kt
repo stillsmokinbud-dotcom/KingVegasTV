@@ -352,9 +352,8 @@ fun GuideScreen(
             }
             settings.bool("guide.back_to_current") && scrolled -> resetToNow()
             // TiviMate: Back from the guide returns to the channel playing full screen.
-            playingChannel != null -> onPlay(app.playQueue.ifEmpty { channels }, playingChannel)
-            // Nothing playing: Back opens the menu (Back again there exits).
-            else -> { drawerOnMenu = true; drawerOpen = true }
+            // Back opens the side panel (groups); hold Back for full screen.
+            else -> { drawerOnMenu = false; drawerOpen = true }
         }
     }
 
@@ -400,8 +399,10 @@ fun GuideScreen(
                 info = "Recording" to (if (start > now) "Scheduled: " else "Recording now: ") + (p?.title ?: c.name)
             }
             "settings" -> onNavigate(MenuDest.SETTINGS)
-            "return_player" -> scope.launch {
-                repo.lastChannel()?.let { last -> onPlay(repo.channels.value, last) }
+            "return_player" -> {
+                val p = playingChannel ?: channel
+                if (p != null) onPlay(app.playQueue.ifEmpty { chs }, p)
+                else scope.launch { repo.lastChannel()?.let { last -> onPlay(repo.channels.value, last) } }
             }
             "exit" -> (context as? android.app.Activity)?.finish()
             "go_back" -> guideBack()
@@ -1011,6 +1012,7 @@ private fun SideDrawer(
     val railExpanded = expanded
     DisposableEffect(Unit) { onDispose { onRailFocus(false) } }
     var myListOpen by remember { mutableStateOf(false) }
+    val subFocus = remember { FocusRequester() }
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = (groupIndex - 4).coerceAtLeast(0))
     val colors = MaterialTheme.colorScheme
     val railBg = colors.surfaceVariant
@@ -1025,6 +1027,20 @@ private fun SideDrawer(
                 .clipToBounds()
                 .background(railBg)
                 .onFocusChanged { onRailFocus(it.hasFocus) }
+                // Remote: Right from the menu goes to the groups (or into My list); Left stays put.
+                .onPreviewKeyEvent { e ->
+                    if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                    when (e.key) {
+                        Key.DirectionRight -> {
+                            if (myListOpen) runCatching { subFocus.requestFocus() }
+                            else if (groups.isNotEmpty()) runCatching { groupFocus.requestFocus() }.onFailure { onClose() }
+                            else onClose()
+                            true
+                        }
+                        Key.DirectionLeft -> true
+                        else -> false
+                    }
+                }
                 .padding(horizontal = 6.dp, vertical = 22.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 4.dp, bottom = 60.dp)) {
@@ -1056,8 +1072,13 @@ private fun SideDrawer(
         if (railExpanded && myListOpen) {
             Column(Modifier.width(GROUPS_COL).fillMaxHeight().background(colors.background).padding(horizontal = 12.dp, vertical = 26.dp),
                 verticalArrangement = Arrangement.Center) {
-                MY_LIST_MENU.forEach { d ->
-                    TvRow(onClick = { onMenu(d) }) { Text(d.label, fontSize = 16.sp, color = rowContentColor()) }
+                MY_LIST_MENU.forEachIndexed { i, d ->
+                    TvRow(
+                        modifier = (if (i == 0) Modifier.focusRequester(subFocus) else Modifier).onPreviewKeyEvent { e ->
+                            if (e.type == KeyEventType.KeyDown && e.key == Key.DirectionRight) { onClose(); true } else false
+                        },
+                        onClick = { onMenu(d) },
+                    ) { Text(d.label, fontSize = 16.sp, color = rowContentColor()) }
                 }
             }
         } else if (groups.isNotEmpty()) {
@@ -1067,7 +1088,11 @@ private fun SideDrawer(
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.onPreviewKeyEvent { e ->
-                        if (e.type == KeyEventType.KeyDown && e.key == Key.DirectionRight) { onClose(); true } else false
+                        if (e.type != KeyEventType.KeyDown) false
+                        else if (e.key == Key.DirectionRight) { onClose(); true }
+                        // Left goes to "TV" in the menu (not whichever menu row happens to be nearest).
+                        else if (e.key == Key.DirectionLeft) { myListOpen = false; runCatching { menuFocus.requestFocus() }; true }
+                        else false
                     },
                 ) {
                     itemsIndexed(groups) { i, g ->
