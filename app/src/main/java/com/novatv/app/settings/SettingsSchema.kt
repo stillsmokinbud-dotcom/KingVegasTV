@@ -185,7 +185,6 @@ object RemoteKeys {
         "pip" to "Picture-in-picture",
         "video_tracks" to "Video tracks",
         "audio_tracks" to "Audio tracks",
-        "audio_offset" to "Audio offset",
         "captions" to "Closed captions",
         "display_mode" to "Display mode",
         "sleep_timer" to "Sleep timer",
@@ -296,7 +295,6 @@ val PLAYER_MENU_BUTTONS = listOf(
     Triple("pip", "Picture-in-picture", true),
     Triple("video_tracks", "Video tracks", true),
     Triple("audio_tracks", "Audio tracks", true),
-    Triple("audio_offset", "Audio offset", true),
     Triple("captions", "Closed captions", true),
     Triple("display_mode", "Display mode", true),
     Triple("sleep_timer", "Sleep timer", true),
@@ -625,7 +623,7 @@ object SettingsSchema {
     private val other = SubmenuItem(
         "other", "Other", listOf(
             SubmenuItem("other.search", "Search", listOf(
-                ToggleItem("search.voice", "Prefer voice search", false),
+                ToggleItem("search.voice", "Prefer voice search", true),
                 ToggleItem("search.history", "Show search history", true),
                 ToggleItem("search.fav_first", "Show favorite channels first", true),
                 ToggleItem("search.past_no_catchup", "Show past programs without catch-up", false),
