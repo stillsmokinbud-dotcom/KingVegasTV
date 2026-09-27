@@ -38,6 +38,12 @@ import com.novatv.app.playlist.PlaylistType
 import kotlinx.coroutines.launch
 import java.text.DateFormat
 import java.util.Date
+import androidx.compose.material.icons.filled.CheckBox
+import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
+import androidx.compose.material.icons.filled.PlaylistAdd
+import androidx.compose.material.icons.filled.PlaylistAddCheck
+import androidx.compose.material.icons.filled.Input
+import androidx.compose.material.icons.filled.Login
 
 /** Short names and descriptions for each playlist type (used on several screens). */
 fun typeTitle(t: PlaylistType): String = when (t) {
