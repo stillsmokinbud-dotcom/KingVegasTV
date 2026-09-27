@@ -55,6 +55,18 @@ data class Episode(
     val image: String? = null,
 )
 
+/** Extra details shown on top of Movies / Shows (TiviMate): cast, director, genre, backdrop… */
+data class VodInfo(
+    val plot: String? = null,
+    val cast: String? = null,
+    val director: String? = null,
+    val genre: String? = null,
+    val duration: String? = null,
+    val backdrop: String? = null,
+    val rating: String? = null,
+    val year: String? = null,
+)
+
 @Serializable
 private data class VodCache(val movies: List<VodItem> = emptyList(), val series: List<VodItem> = emptyList(), val updated: Long = 0, val version: Int = 0)
 
@@ -201,6 +213,74 @@ class VodRepository(
                 )
             }.sortedWith(compareBy({ it.season }, { it.number }))
         }
+    }
+
+    // ---- details (get_vod_info / get_series_info) ----
+
+    private val infoCache = object : LinkedHashMap<String, VodInfo>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, VodInfo>?) = size > 300
+    }
+
+    fun cachedInfo(item: VodItem): VodInfo? = synchronized(infoCache) { infoCache[item.id] }
+
+    /** Cast, director, genre, running time and backdrop of a movie or series (null if the server has none). */
+    suspend fun info(item: VodItem): VodInfo? {
+        cachedInfo(item)?.let { return it }
+        return withContext(Dispatchers.IO) {
+            runCatching {
+                val p = playlists.readPlaylists().firstOrNull { it.id == item.playlistId } ?: return@runCatching null
+                val login = loginFor(p) ?: return@runCatching null
+                val ua = p.userAgent.ifBlank { DEFAULT_USER_AGENT }
+                val url = if (item.seriesId != null) "${api(login)}&action=get_series_info&series_id=${item.seriesId}"
+                else "${api(login)}&action=get_vod_info&vod_id=${item.id.substringAfterLast(":m")}"
+                val o = (get(url, ua) as? JsonObject)?.get("info") as? JsonObject ?: return@runCatching null
+                val backdrop = when (val b = o["backdrop_path"]) {
+                    is JsonArray -> b.firstOrNull().str()
+                    else -> b.str()
+                } ?: o["cover_big"].str()
+                val secs = o["duration_secs"].str()?.toLongOrNull()
+                    ?: o["episode_run_time"].str()?.toLongOrNull()?.times(60)
+                    ?: o["duration"].str()?.split(':')?.takeIf { it.size == 3 }?.let { (h, m, sec) ->
+                        (h.toLongOrNull() ?: 0) * 3600 + (m.toLongOrNull() ?: 0) * 60 + (sec.toLongOrNull() ?: 0)
+                    }
+                val duration = secs?.takeIf { it > 0 }?.let { val h = it / 3600; val m = (it % 3600) / 60; if (h > 0) "${h}h ${m}m" else "${m}m" }
+                VodInfo(
+                    plot = o["plot"].str() ?: o["description"].str(),
+                    cast = o["cast"].str() ?: o["actors"].str(),
+                    director = o["director"].str(),
+                    genre = o["genre"].str(),
+                    duration = duration,
+                    backdrop = backdrop,
+                    rating = o["rating"].str()?.takeIf { it != "0" },
+                    year = (o["releasedate"].str() ?: o["releaseDate"].str() ?: o["release_date"].str())?.take(4),
+                )
+            }.getOrNull()?.also { synchronized(infoCache) { infoCache[item.id] = it } }
+        }
+    }
+
+    // ---- My list and History (TiviMate's first two categories in Movies / Shows) ----
+
+    private val idsSer = ListSerializer(String.serializer())
+    private fun idsFile(name: String) = File(context.filesDir, "vod_$name.json")
+    private fun readIds(name: String): List<String> =
+        runCatching { json.decodeFromString(idsSer, idsFile(name).readText()) }.getOrDefault(emptyList())
+    private fun writeIds(name: String, ids: List<String>) =
+        ioExecutor.execute { synchronized(idsSer) { runCatching { idsFile(name).writeText(json.encodeToString(idsSer, ids)) } } }
+
+    private val _myList = MutableStateFlow(readIds("mylist"))
+    val myList: StateFlow<List<String>> = _myList.asStateFlow()
+    private val _history = MutableStateFlow(readIds("history"))
+    val history: StateFlow<List<String>> = _history.asStateFlow()
+
+    fun toggleMyList(id: String) {
+        val l = _myList.value
+        _myList.value = if (id in l) l - id else listOf(id) + l
+        writeIds("mylist", _myList.value)
+    }
+
+    fun addHistory(id: String) {
+        _history.value = (listOf(id) + (_history.value - id)).take(100)
+        writeIds("history", _history.value)
     }
 
     // ---- resume positions (Continue watching) ----
