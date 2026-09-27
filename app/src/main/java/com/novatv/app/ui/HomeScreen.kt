@@ -223,7 +223,10 @@ fun GuideScreen(
         // TiviMate: OK on another channel plays it in the preview and stays in the guide;
         // OK on the channel that's already playing goes full screen.
         val go = {
-            if (settings.bool("epg.show_preview") && settings.bool("guide.preview_stay") && c.id != playingId) {
+            // Preview on: "Stay on TV guide when switching channels". Preview off (the guide is drawn over
+            // the video, "overlay mode"): "Stay on TV guide when switching channels in overlay mode".
+            val stay = if (settings.bool("epg.show_preview")) settings.bool("guide.preview_stay") else settings.bool("guide.stay_overlay")
+            if (stay && c.id != playingId) {
                 playingId = c.id
                 app.lastPlayedId = c.id
                 app.playQueue = g.channels
@@ -446,10 +449,19 @@ fun GuideScreen(
     }
 
     val colors = MaterialTheme.colorScheme
+    // Overlay mode (Preview off): the channel you're watching keeps playing full screen behind a
+    // see-through guide (Settings › Appearance › User interface transparency).
+    val overlayMode = !settings.bool("epg.show_preview") && playingChannel != null && !background && playlists?.isEmpty() != true
+    if (overlayMode) {
+        Box(Modifier.fillMaxSize().background(Color.Black)) {
+            PreviewVideo(settings, playingChannel!!, instant = true, modifier = Modifier.fillMaxSize())
+        }
+    }
+    val guideAlpha = if (overlayMode) (1f - settings.int("appearance.overlay_opacity") / 100f).coerceIn(0.35f, 0.92f) else 1f
     Box(
         Modifier
             .fillMaxSize()
-            .background(colors.background)
+            .background(colors.background.copy(alpha = guideAlpha))
             .focusRequester(rootFocus)
             .onKeyEvent { e ->
                 lastInput[0] = System.currentTimeMillis()
@@ -649,7 +661,7 @@ fun GuideScreen(
             }
         }
     }
-    pinFor?.let { action -> PinDialog(settings.str("parental.pin"), onDismiss = { pinFor = null }) { pinFor = null; action() } }
+    pinFor?.let { action -> PinDialog(settings.str("parental.pin"), forChannels = true, onDismiss = { pinFor = null }) { pinFor = null; action() } }
     info?.let { (t, m) -> MessageDialog(t, m) { info = null } }
     paywall?.let { PaywallDialog(it) { paywall = null } }
 }
@@ -735,9 +747,11 @@ fun ChannelLogo(settings: AppSettings, c: Channel, width: Dp) {
         contentAlignment = Alignment.Center,
     ) {
         Text(initials, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
-        if (c.logo != null) {
+        val app = LocalContext.current.app
+        val logo = remember(c.id, c.logo, settings) { Logos.resolve(c, settings, app.epg.data.value, app.playlists) }
+        if (logo != null) {
             AsyncImage(
-                model = c.logo, contentDescription = null, contentScale = ContentScale.Fit,
+                model = logo, contentDescription = null, contentScale = ContentScale.Fit,
                 modifier = Modifier.fillMaxSize(),
             )
         }
@@ -918,6 +932,7 @@ private fun GuideRowItem(
         Box(Modifier.width(progWidth).fillMaxHeight()) {
             val twoLines = settings.bool("guide.two_line_titles")
             val highlightNow = settings.bool("guide.highlight_current_programs")
+            val progressOnly = settings.bool("guide.highlight_progress_only")
             for (cell in cells) {
                 val focused = focusTime >= 0 && cell.start <= focusTime && cell.end > focusTime
                 val w = xOf(cell.end) - xOf(cell.start)
@@ -939,10 +954,11 @@ private fun GuideRowItem(
                         .pointerInput(index, cell.start) { detectTapGestures(onTap = { onTapCell(index, cell) }, onLongPress = { onLongChannel(index) }) },
                     contentAlignment = Alignment.CenterStart,
                 ) {
-                    // "Highlight current programs": the part already aired is a shade lighter.
+                    // "Highlight current programs": the part already aired is a shade lighter
+                    // ("Highlight progress only"), or the whole program that's on now.
                     if (!focused && airing && highlightNow) {
                         Box(Modifier.fillMaxHeight()
-                            .fillMaxWidth(((now - cell.start).toFloat() / (cell.end - cell.start)).coerceIn(0f, 1f))
+                            .fillMaxWidth(if (progressOnly) ((now - cell.start).toFloat() / (cell.end - cell.start)).coerceIn(0f, 1f) else 1f)
                             .background(Color.White.copy(alpha = 0.06f)))
                     }
                     if (w > 44.dp) {
@@ -1104,17 +1120,37 @@ private fun CenterMessage(title: String, text: String) {
 fun SearchScreen(settings: AppSettings, onPlay: (List<Channel>, Channel) -> Unit) {
     val context = LocalContext.current
     val app = context.app
+    val scope = rememberCoroutineScope()
     val channels by app.playlists.channels.collectAsState()
     val epg by app.epg.data.collectAsState()
+    val favorites by remember(DataKeys.FAVORITES) { app.settings.listFlow(DataKeys.FAVORITES) }.collectAsState(initial = emptyList())
+    val history by remember(DataKeys.SEARCH_HISTORY) { app.settings.listFlow(DataKeys.SEARCH_HISTORY) }.collectAsState(initial = emptyList())
+    val playUrl = LocalPlayUrl.current
     var query by remember { mutableStateOf("") }
     val fr = remember { FocusRequester() }
     val q = query.trim()
+    // Other › Search › "Prefer voice search": open the microphone right away.
+    val voice = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { r ->
+        r.data?.getStringArrayListExtra(android.speech.RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()?.let { query = it }
+    }
+    fun startVoice() = runCatching {
+        voice.launch(android.content.Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+            .putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL, android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM))
+    }
+    LaunchedEffect(Unit) { if (settings.bool("search.voice")) startVoice() }
+    fun saveTerm(term: String) {
+        if (!settings.bool("search.history") || term.length < 2) return
+        scope.launch { app.settings.setList(DataKeys.SEARCH_HISTORY, (listOf(term) + history.filterNot { it.equals(term, true) }).take(20)) }
+    }
     // Searched off the main thread (17,000+ channels and their programs), shortly after typing stops.
-    val chResults by produceState(emptyList<Channel>(), q, channels) {
+    val chResults by produceState(emptyList<Channel>(), q, channels, favorites) {
         if (q.length < 2) { value = emptyList(); return@produceState }
         delay(200)
         value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-            channels.filter { it.name.contains(q, ignoreCase = true) }.take(100)
+            val found = channels.filter { it.name.contains(q, ignoreCase = true) }
+            // Other › Search › "Show favorite channels first"
+            (if (settings.bool("search.fav_first")) { val fav = favorites.toSet(); found.sortedBy { if (it.id in fav) 0 else 1 } } else found).take(100)
         }
     }
     val progResults by produceState(emptyList<Pair<Channel, Program>>(), q, channels, epg) {
@@ -1122,35 +1158,53 @@ fun SearchScreen(settings: AppSettings, onPlay: (List<Channel>, Channel) -> Unit
         delay(300)
         value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
             val t = System.currentTimeMillis()
+            val pastAll = settings.bool("search.past_no_catchup")
             val out = ArrayList<Pair<Channel, Program>>()
             for (c in channels) {
+                // Past programs: those you can watch through catch-up, or all ("Show past programs without catch-up").
+                val pastFrom = if (c.catchupDays > 0) t - c.catchupDays * 86_400_000L else if (pastAll) 0L else t
                 for (p in epg.programsFor(c)) {
-                    if (p.end > t && p.title.contains(q, ignoreCase = true)) out += c to p
-                    if (out.size >= 60) break
+                    if (p.end > pastFrom && p.title.contains(q, ignoreCase = true)) out += c to p
+                    if (out.size >= 80) break
                 }
-                if (out.size >= 60) break
+                if (out.size >= 80) break
             }
-            out
+            out.sortedBy { if (it.second.end > t) 0 else 1 }
         }
     }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(32.dp)) {
         ScreenHeader("Search", "Channels and programs")
-        OutlinedTextField(value = query, onValueChange = { query = it }, singleLine = true,
-            placeholder = { Text("Type at least 2 letters") }, modifier = Modifier.width(560.dp).focusRequester(fr))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(value = query, onValueChange = { query = it }, singleLine = true,
+                placeholder = { Text("Type at least 2 letters") }, modifier = Modifier.width(560.dp).focusRequester(fr))
+            Spacer(Modifier.width(12.dp))
+            TvRow(modifier = Modifier.width(150.dp), onClick = { startVoice() }) { RowTitle("🎤 Voice") }
+        }
         Spacer(Modifier.height(12.dp))
         LazyColumn {
+            // Other › Search › "Show search history"
+            if (q.isEmpty() && settings.bool("search.history")) {
+                itemsIndexed(history) { _, h -> TvRow(onClick = { query = h }) { RowTitle("🕘  $h") } }
+            }
             itemsIndexed(chResults) { _, c ->
-                TvRow(onClick = { onPlay(listOf(c), c) }) {
+                TvRow(onClick = { saveTerm(q); onPlay(listOf(c), c) }) {
                     ChannelLogo(settings, c, 40.dp)
                     Spacer(Modifier.width(12.dp))
                     RowTitle(c.name, c.group)
                 }
             }
             itemsIndexed(progResults) { _, (c, p) ->
-                TvRow(onClick = { onPlay(listOf(c), c) }) {
+                val now = System.currentTimeMillis()
+                val past = p.end <= now
+                TvRow(onClick = {
+                    saveTerm(q)
+                    val url = if (past) com.novatv.app.premium.Catchup.url(c, p.start, p.end) else null
+                    if (url != null) playUrl("${c.name} · ${p.title}", url) else if (!past) onPlay(listOf(c), c)
+                }) {
                     ChannelLogo(settings, c, 40.dp)
                     Spacer(Modifier.width(12.dp))
-                    RowTitle(p.title, "${c.name} · ${timeText(p.start, settings, context)}")
+                    RowTitle(p.title, "${c.name} · ${dateTimeText(p.start, settings, context)}" + if (past && c.catchupDays > 0) "  ↺" else "",
+                        dim = past && c.catchupDays <= 0)
                 }
             }
         }
