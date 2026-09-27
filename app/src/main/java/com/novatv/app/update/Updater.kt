@@ -117,8 +117,10 @@ object Updater {
 }
 
 /**
- * Checks for updates a few seconds after start and every 6 hours, and pops up
- * "Update available" with Update now / Later.
+ * Checks for an update the moment the app is opened (and every time it comes back to the screen),
+ * and pops up "Update available" right away, even over the channel that starts playing. "Later"
+ * only hides it until the next time the app is opened. While the app stays open it also checks
+ * every 6 hours (that pop-up waits until the viewer isn't watching full screen).
  */
 @Composable
 fun UpdatePrompt(show: Boolean = true) {
@@ -132,12 +134,20 @@ fun UpdatePrompt(show: Boolean = true) {
     var error by remember { mutableStateOf<String?>(null) }
     var needsPermission by remember { mutableStateOf(false) }
     var apk by remember { mutableStateOf<File?>(null) }
+    /** True when the pop-up comes from opening the app: then it shows on any screen. */
+    var fromOpen by remember { mutableStateOf(false) }
 
+    // Every time the app is opened / brought back: check now and prompt straight away.
+    androidx.lifecycle.compose.LifecycleEventEffect(androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+        dismissedVersion = 0
+        scope.launch {
+            Updater.check(http)?.let { fromOpen = true; Updater.offer(it) }
+        }
+    }
     LaunchedEffect(Unit) {
-        delay(4_000)
         while (true) {
-            Updater.check(http)?.let { if (it.version > dismissedVersion) Updater.offer(it) }
             delay(6 * 60 * 60 * 1000L)
+            Updater.check(http)?.let { if (it.version > dismissedVersion) { fromOpen = false; Updater.offer(it) } }
         }
     }
 
@@ -147,7 +157,7 @@ fun UpdatePrompt(show: Boolean = true) {
     }
 
     val r = release ?: return
-    if (!show && progress == null && !needsPermission) return
+    if (!show && !fromOpen && progress == null && !needsPermission) return
     val title = when {
         needsPermission -> "Allow updates"
         progress != null -> "Downloading update…"
