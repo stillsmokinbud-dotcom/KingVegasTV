@@ -55,7 +55,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
 import com.novatv.app.epg.EpgData
 import com.novatv.app.epg.Program
 import com.novatv.app.playlist.Channel
@@ -64,7 +64,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
-private val I = androidx.compose.material.icons.I.Filled
+private val I = androidx.compose.material.icons.Icons.Filled
 private val PanelText = Color.White
 private val PanelDim = Color.White.copy(alpha = 0.72f)
 
@@ -74,7 +74,7 @@ private fun hms(ms: Long): String {
 }
 
 /** "HD", "FHD", "4K" plus frame rate and "5.1" style badges from what is actually playing. */
-private fun badges(player: Player): List<String> {
+private fun badges(player: ExoPlayer): List<String> {
     val v = player.videoFormat
     val a = player.audioFormat
     return buildList {
@@ -113,7 +113,7 @@ internal fun PlayerInfoPanel(
     settings: AppSettings,
     channel: Channel,
     epg: EpgData,
-    player: Player,
+    player: ExoPlayer,
     interactive: Boolean,
     peek: Boolean,
     isPlaying: Boolean,
