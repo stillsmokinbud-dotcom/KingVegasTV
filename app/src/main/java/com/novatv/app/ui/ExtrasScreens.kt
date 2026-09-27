@@ -52,6 +52,7 @@ import com.novatv.app.premium.Recording
 import com.novatv.app.premium.Reminder
 import com.novatv.app.settings.AppSettings
 import java.text.DateFormat
+import kotlinx.coroutines.launch
 import java.util.Date
 
 /** Plays a URL full screen (catch-up, recordings): (title, url). Provided by MainActivity. */
@@ -224,4 +225,40 @@ private fun MultiviewTile(settings: AppSettings, channel: Channel, muted: Boolea
         update = { it.player = built.player },
         modifier = Modifier.fillMaxSize(),
     )
+}
+
+/** History: recently watched channels (newest first). OK plays; the first row clears the list. */
+@Composable
+fun HistoryScreen(settings: AppSettings, onPlay: (List<Channel>, Channel) -> Unit) {
+    val context = LocalContext.current
+    val app = context.app
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val all by app.playlists.channels.collectAsState()
+    val ids by remember { app.settings.listFlow(com.novatv.app.settings.DataKeys.RECENT) }.collectAsState(initial = emptyList())
+    val epg by app.epg.data.collectAsState()
+    val list = remember(ids, all) { val byId = all.associateBy { it.id }; ids.mapNotNull { byId[it] } }
+    val fr = remember { FocusRequester() }
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(40.dp)) {
+        ScreenHeader("History", "Channels you watched recently")
+        if (list.isEmpty()) Text("Nothing watched yet.", fontSize = 15.sp, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f))
+        LazyColumn {
+            if (list.isNotEmpty()) item {
+                TvRow(onClick = { scope.launch { app.settings.setList(com.novatv.app.settings.DataKeys.RECENT, emptyList()) } }) {
+                    RowTitle("Clear history")
+                }
+            }
+            items(list.size) { i ->
+                val c = list[i]
+                val p = epg.at(c, System.currentTimeMillis())
+                TvRow(modifier = if (i == 0) Modifier.focusRequester(fr) else Modifier, onClick = { onPlay(list, c) }) {
+                    ChannelLogo(settings, c, 44.dp)
+                    Column(Modifier.padding(start = 14.dp)) {
+                        Text((c.number?.let { "$it  " } ?: "") + c.name, fontSize = 16.sp, color = rowContentColor(), maxLines = 1)
+                        Text(p?.title ?: "No information", fontSize = 13.sp, color = rowContentColor(dimmed = true), maxLines = 1)
+                    }
+                }
+            }
+        }
+    }
+    AutoFocus(fr, list.size)
 }
