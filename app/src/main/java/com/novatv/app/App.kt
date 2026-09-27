@@ -59,6 +59,16 @@ class App : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // If the app ever closes by itself, keep what went wrong so it can be shown on the next start.
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            runCatching {
+                java.io.File(filesDir, "last_crash.txt").writeText(
+                    "Version ${runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull()}\n" +
+                    java.text.DateFormat.getDateTimeInstance().format(java.util.Date()) + "\n\n" + android.util.Log.getStackTraceString(e))
+            }
+            previous?.uncaughtException(t, e)
+        }
         settings = SettingsRepository(this)
         playlists = PlaylistRepository(this, settings)
         epg = EpgRepository(this, settings, playlists)
@@ -80,6 +90,11 @@ class App : Application() {
                 settings.set("general.recent_group", "false")
                 settings.set("groups.sort", "playlist")
                 settings.set("data.groups_like_tivimate_v1", "done")
+            }
+            // One time: the dark black / dark grey look (like TiviMate) for everyone.
+            if (settings.current().str("data.theme_dark_v1") != "done") {
+                settings.set("appearance.theme", "dark")
+                settings.set("data.theme_dark_v1", "done")
             }
             // One time: the channel info panel shows at the bottom (like TiviMate) for everyone.
             if (settings.current().str("data.info_bottom_v1") != "done") {
