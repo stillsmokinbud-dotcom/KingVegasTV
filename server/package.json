@@ -12,6 +12,7 @@
     "start": "node server.js"
   },
   "dependencies": {
+    "@libsql/client": "^0.18.0",
     "express": "^5.1.0",
     "qrcode": "^1.5.4",
     "stripe": "^18.0.0"
