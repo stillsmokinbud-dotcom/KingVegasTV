@@ -45,6 +45,10 @@ class App : Application() {
     @Volatile var lastSettings: com.novatv.app.settings.AppSettings? = null
     /** Set by the player to open the TV guide with the groups list showing. */
     @Volatile var openGuideGroups: Boolean = false
+    /** The player was opened from the guide's preview window (for the animated grow-to-full-screen). */
+    @Volatile var fromGuidePreview: Boolean = false
+    /** When the parental PIN was last entered (Parental controls › Don't require PIN after unlocking). */
+    @Volatile var pinUnlockedAt: Long = 0L
 
     override fun onCreate() {
         super.onCreate()
@@ -55,6 +59,7 @@ class App : Application() {
         vod = com.novatv.app.playlist.VodRepository(this, playlists.http, playlists)
         reminders = com.novatv.app.premium.ReminderStore(this)
         recordings = com.novatv.app.premium.RecordingManager(this, playlists, appScope)
+        com.novatv.app.boot.WakeAlarms.registerScreenOn(this)
         // Settings → TV guide → "Update when a playlist is updated"
         playlists.onChannelsUpdated = {
             if (settings.current().bool("epg.update_on_playlist_change")) appScope.launch { epg.update(skipIfNewerThanMs = 10 * 60_000L) }
