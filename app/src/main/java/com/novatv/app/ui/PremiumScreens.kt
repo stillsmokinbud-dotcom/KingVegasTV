@@ -438,7 +438,7 @@ fun UnlockPremiumFlow(onClose: () -> Unit) {
                 }
                 Spacer(Modifier.height(6.dp))
                 TvRow(modifier = Modifier.padding(horizontal = 150.dp), onClick = {
-                    error = "To reset your password, contact King Vegas TV support or the person who gave you your account."
+                    error = "To reset your password, contact KINGVEGAS TV support or the person who gave you your account."
                 }) {
                     Text("Forgot password", fontSize = 14.sp, color = rowContentColor(dimmed = true),
                         textDecoration = TextDecoration.Underline, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
