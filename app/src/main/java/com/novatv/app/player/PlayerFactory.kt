@@ -83,6 +83,7 @@ class PlayerFactory(private val context: Context, private val baseHttp: OkHttpCl
         // Auto frame rate is done by [Afr] (display mode switching); the player itself doesn't change it.
         player.setVideoChangeFrameRateStrategy(C.VIDEO_CHANGE_FRAME_RATE_STRATEGY_OFF)
 
+        all.add(player)
         return Built(player, dataSource)
     }
 
@@ -122,6 +123,48 @@ class PlayerFactory(private val context: Context, private val baseHttp: OkHttpCl
     }
 
     companion object {
+        /** Every player the app has made that is still alive (so they can all go quiet when the app leaves the screen). */
+        private val all: MutableSet<ExoPlayer> = java.util.Collections.newSetFromMap(java.util.WeakHashMap())
+        /** Players that were playing when the app left the screen, to start again when it comes back. */
+        private val resumeLater = mutableListOf<ExoPlayer>()
+
+        /** Call just before releasing a player. */
+        fun forget(p: ExoPlayer) { all.remove(p); resumeLater.remove(p) }
+
+        /**
+         * The app left the screen (Home, closed, another app opened): silence every player.
+         * Live channels are stopped (the connection is closed); movies/catch-up are paused where they are.
+         */
+        fun suspendAll() {
+            resumeLater.clear()
+            for (p in all.toList()) runCatching {
+                if (p.playWhenReady && p.playbackState != androidx.media3.common.Player.STATE_IDLE) resumeLater.add(p)
+                p.playWhenReady = false
+                if (isLive(p)) p.stop()
+            }
+        }
+
+        /** The app is back on screen: start again whatever was playing (live channels reconnect at the live point). */
+        fun resumeAll() {
+            for (p in resumeLater.toList()) runCatching {
+                if (p.playbackState == androidx.media3.common.Player.STATE_IDLE && p.mediaItemCount > 0) {
+                    if (p.isCurrentMediaItemLive || !p.isCurrentMediaItemSeekable) p.seekToDefaultPosition()
+                    p.prepare()
+                }
+                p.playWhenReady = true
+            }
+            resumeLater.clear()
+        }
+
+        /** The app is closing for good: stop everything. */
+        fun stopAll() {
+            resumeLater.clear()
+            for (p in all.toList()) runCatching { p.playWhenReady = false; p.stop() }
+        }
+
+        private fun isLive(p: ExoPlayer): Boolean =
+            p.isCurrentMediaItemLive || !p.isCurrentMediaItemSeekable || p.duration == C.TIME_UNSET
+
         /** General › UDP proxy: udp://239.1.1.1:1234 -> http://proxy/udp/239.1.1.1:1234 (udpxy). */
         fun viaUdpProxy(url: String, s: AppSettings): String {
             val proxy = s.str("general.udp_proxy").trim().removePrefix("http://").trimEnd('/')
