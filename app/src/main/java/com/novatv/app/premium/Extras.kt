@@ -84,8 +84,9 @@ class ReminderStore(context: Context) {
     fun remove(r: Reminder) = save(_items.value.filterNot { it.channelId == r.channelId && it.start == r.start })
 
     /** Reminders whose program has started (and not yet ended); removes them from the list. */
-    fun takeDue(now: Long = System.currentTimeMillis()): List<Reminder> {
-        val due = _items.value.filter { it.start <= now }
+    fun takeDue(now: Long = System.currentTimeMillis(), beforeMs: Long = 0): List<Reminder> {
+        // Settings › Other › Reminders › "Remind before program start"
+        val due = _items.value.filter { it.start - beforeMs <= now }
         if (due.isNotEmpty()) save(_items.value - due.toSet())
         return due.filter { it.end > now }
     }
@@ -125,7 +126,15 @@ class RecordingManager(
     val items: StateFlow<List<Recording>> = _items.asStateFlow()
     private val jobs = mutableMapOf<String, Job>()
 
-    val folder: File get() = (context.getExternalFilesDir("Recordings") ?: File(context.filesDir, "Recordings")).apply { mkdirs() }
+    /** Settings › Other › Recording › Recordings folder (falls back to the app's own folder if it can't be written). */
+    val folder: File get() {
+        val wanted = (context.applicationContext as? com.novatv.app.App)?.lastSettings?.str("recording.folder")?.trim().orEmpty()
+        if (wanted.isNotEmpty()) {
+            val f = File(wanted)
+            if ((f.exists() || f.mkdirs()) && f.canWrite()) return f
+        }
+        return (context.getExternalFilesDir("Recordings") ?: File(context.filesDir, "Recordings")).apply { mkdirs() }
+    }
 
     private fun load(): List<Recording> = runCatching { json.decodeFromString(ser, file.readText()) }.getOrDefault(emptyList())
         // A recording that was running when the app closed is incomplete.
@@ -146,7 +155,12 @@ class RecordingManager(
     fun isRecording(channelId: String) = _items.value.any { it.channelId == channelId && it.state == "recording" }
 
     /** Record [channel] from [start] (now if in the past) until [end]. */
-    fun schedule(channel: Channel, title: String, start: Long, end: Long): Recording {
+    fun schedule(channel: Channel, title: String, startAt: Long, endAt: Long): Recording {
+        // Settings › Other › Recording › start earlier / stop later (only for scheduled programs, not "record now").
+        val s = (context.applicationContext as? com.novatv.app.App)?.lastSettings
+        val now0 = System.currentTimeMillis()
+        val start = if (startAt > now0) startAt - (s?.int("recording.pad_before") ?: 0) * 60_000L else startAt
+        val end = endAt + (s?.int("recording.pad_after") ?: 0) * 60_000L
         val id = "r" + System.currentTimeMillis()
         val safe = title.replace(Regex("""[^\w\- ]"""), "").take(40).ifBlank { "Recording" }
         val stamp = SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date(maxOf(start, System.currentTimeMillis())))
