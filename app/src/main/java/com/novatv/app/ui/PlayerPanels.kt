@@ -493,7 +493,11 @@ internal fun PlayerChannelList(
             val ch = scheduleFor!!
             val progs = remember(ch.id, epg) {
                 val from = now - (if (ch.catchupDays > 0) ch.catchupDays.coerceAtMost(7) * 86_400_000L else 3 * 3_600_000L)
-                epg.programsFor(ch).filter { it.end > from }.take(200)
+                // Keep the list short but always around "now" (a week of catch-up can be 300+ programs).
+                epg.programsFor(ch).filter { it.end > from }.let { l ->
+                    val n = l.indexOfFirst { it.end > now }.let { if (it < 0) l.size else it }
+                    l.subList(maxOf(0, n - 150), minOf(l.size, n + 50))
+                }
             }
             var focusedProg by remember(ch.id) { mutableStateOf(progs.firstOrNull { it.start <= now && it.end > now }) }
             val schedFocus = remember { FocusRequester() }
