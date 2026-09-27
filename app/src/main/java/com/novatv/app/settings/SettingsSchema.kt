@@ -136,6 +136,7 @@ enum class SettingAction {
     GET_PREMIUM,
     DEVICE_INFO,
     VERSION_INFO,
+    CHECK_UPDATES,
 }
 
 private fun opts(vararg pairs: Pair<String, String>) = pairs.toList()
@@ -655,6 +656,7 @@ object SettingsSchema {
 
     private val about = SubmenuItem(
         "about", "About", listOf(
+            ActionItem("about.check_updates", "Check for updates", SettingAction.CHECK_UPDATES),
             ActionItem("about.privacy", "Privacy policy", SettingAction.PRIVACY_POLICY),
             ActionItem("about.account", "Account", SettingAction.PREMIUM_ACCOUNT),
             ActionItem("about.get_premium", "Unlock premium", SettingAction.GET_PREMIUM),
