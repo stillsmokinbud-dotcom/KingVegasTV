@@ -43,6 +43,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
@@ -470,15 +473,25 @@ fun GuideScreen(
     // see-through guide (Settings › Appearance › User interface transparency).
     val overlayMode = !settings.bool("epg.show_preview") && playingChannel != null && !background && playlists?.isEmpty() != true
     if (overlayMode) {
-        Box(Modifier.fillMaxSize().background(Color.Black)) {
-            PreviewVideo(settings, playingChannel!!, instant = true, modifier = Modifier.fillMaxSize())
-        }
+        PreviewVideo(settings, playingChannel!!, instant = true, modifier = Modifier.fillMaxSize(), full = true)
     }
     val guideAlpha = if (overlayMode) (1f - settings.int("appearance.overlay_opacity") / 100f).coerceIn(0.35f, 0.92f) else 1f
     Box(
         Modifier
             .fillMaxSize()
-            .background(colors.background.copy(alpha = guideAlpha))
+            // Guide background with a see-through window where the live preview picture sits.
+            .drawBehind {
+                val bg = colors.background.copy(alpha = guideAlpha)
+                val r = VideoStage.rect.value
+                if (overlayMode || r == null) drawRect(bg)
+                else {
+                    val w = size.width; val h = size.height
+                    drawRect(bg, androidx.compose.ui.geometry.Offset.Zero, androidx.compose.ui.geometry.Size(w, r.top.coerceIn(0f, h)))
+                    drawRect(bg, androidx.compose.ui.geometry.Offset(0f, r.bottom.coerceIn(0f, h)), androidx.compose.ui.geometry.Size(w, (h - r.bottom).coerceAtLeast(0f)))
+                    drawRect(bg, androidx.compose.ui.geometry.Offset(0f, r.top), androidx.compose.ui.geometry.Size(r.left.coerceAtLeast(0f), r.height))
+                    drawRect(bg, androidx.compose.ui.geometry.Offset(r.right, r.top), androidx.compose.ui.geometry.Size((w - r.right).coerceAtLeast(0f), r.height))
+                }
+            }
             .focusRequester(rootFocus)
             .onKeyEvent { e ->
                 lastInput[0] = System.currentTimeMillis()
@@ -725,7 +738,7 @@ private fun TopInfo(
     val showPreview = settings.bool("epg.show_preview")
     Row(Modifier.fillMaxWidth().height(230.dp).padding(start = 24.dp, end = 30.dp, top = 18.dp, bottom = 8.dp)) {
         if (showPreview) {
-            PreviewVideo(settings, preview, instant = previewChosen, modifier = Modifier.size(356.dp, 200.dp).clip(RoundedCornerShape(6.dp)).background(Color.Black))
+            PreviewVideo(settings, preview, instant = previewChosen, modifier = Modifier.size(356.dp, 200.dp))
             Spacer(Modifier.width(24.dp))
         }
         Column(Modifier.weight(1f)) {
@@ -800,7 +813,7 @@ fun ChannelLogo(settings: AppSettings, c: Channel, width: Dp) {
 
 /** Live mini-preview: the channel you're watching (or the highlighted one if nothing played yet). */
 @Composable
-private fun PreviewVideo(settings: AppSettings, channel: Channel, instant: Boolean, modifier: Modifier) {
+private fun PreviewVideo(settings: AppSettings, channel: Channel, instant: Boolean, modifier: Modifier, full: Boolean = false) {
     val context = LocalContext.current
     val app = context.app
     val repo = app.playlists
@@ -816,22 +829,17 @@ private fun PreviewVideo(settings: AppSettings, channel: Channel, instant: Boole
         app.shared.markLoaded(channel.id)
         built.player.playWhenReady = true
     }
-    AndroidView(
-        factory = { ctx ->
-            PlayerView(ctx).apply {
-                layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
-                useController = false
-                isFocusable = false
-                descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
-                // Keep the last picture while switching instead of flashing black.
-                setKeepContentOnPlayerReset(true)
-                player = built.player
-            }
-        },
-        update = { it.player = built.player },
-        onRelease = { it.player = null },
-        modifier = modifier,
-    )
+    // The picture is the app-wide shared video (VideoStage), placed exactly over this box; the box
+    // itself is see-through. Nothing is torn down when you go full screen or open Settings.
+    val token = remember { mutableIntStateOf(0) }
+    DisposableEffect(Unit) { onDispose { VideoStage.release(token.intValue) } }
+    Box(modifier.onGloballyPositioned { c ->
+        val r = c.boundsInRoot()
+        if (r.width > 0f && r.height > 0f) {
+            if (token.intValue == 0) token.intValue = VideoStage.claim(r) else VideoStage.move(token.intValue, r)
+            if (!full) VideoStage.lastPreview = r
+        }
+    })
 }
 
 // ------------------------------------------------------------------ grid
@@ -1199,7 +1207,12 @@ private fun CenterMessage(title: String, text: String) {
 
 /** Search (side menu → Search): channels and upcoming programs. */
 @Composable
-fun SearchScreen(settings: AppSettings, onPlay: (List<Channel>, Channel) -> Unit) {
+fun SearchScreen(
+    settings: AppSettings,
+    onPlay: (List<Channel>, Channel) -> Unit,
+    /** Opens a movie (details) or a TV show (seasons & episodes). */
+    onOpenVod: (com.novatv.app.playlist.VodItem, Boolean) -> Unit = { _, _ -> },
+) {
     val context = LocalContext.current
     val app = context.app
     val scope = rememberCoroutineScope()
@@ -1235,6 +1248,21 @@ fun SearchScreen(settings: AppSettings, onPlay: (List<Channel>, Channel) -> Unit
             (if (settings.bool("search.fav_first")) { val fav = favorites.toSet(); found.sortedBy { if (it.id in fav) 0 else 1 } } else found).take(100)
         }
     }
+    // Movies and TV shows from the playlists (Xtream) are searched too.
+    val movies by app.vod.movies.collectAsState()
+    val shows by app.vod.series.collectAsState()
+    LaunchedEffect(Unit) { runCatching { if (movies.isEmpty() && shows.isEmpty()) app.vod.loadCache() } }
+    val vodResults by produceState(emptyList<com.novatv.app.playlist.VodItem>() to emptyList<com.novatv.app.playlist.VodItem>(), q, movies, shows) {
+        if (q.length < 2) { value = emptyList<com.novatv.app.playlist.VodItem>() to emptyList(); return@produceState }
+        delay(250)
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            fun find(list: List<com.novatv.app.playlist.VodItem>) = list.asSequence()
+                .filter { it.name.contains(q, ignoreCase = true) }
+                .sortedBy { if (it.name.startsWith(q, ignoreCase = true)) 0 else 1 }
+                .take(60).toList()
+            find(movies) to find(shows)
+        }
+    }
     val progResults by produceState(emptyList<Pair<Channel, Program>>(), q, channels, epg) {
         if (q.length < 2 || settings.str("general.search_scope") == "channels") { value = emptyList(); return@produceState }
         delay(300)
@@ -1255,10 +1283,18 @@ fun SearchScreen(settings: AppSettings, onPlay: (List<Channel>, Channel) -> Unit
         }
     }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(32.dp)) {
-        ScreenHeader("Search", "Channels and programs")
+        ScreenHeader("Search", "Live channels, TV programs, movies and TV shows")
+        val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+        val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
         Row(verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(value = query, onValueChange = { query = it }, singleLine = true,
-                placeholder = { Text("Type at least 2 letters") }, modifier = Modifier.width(560.dp).focusRequester(fr))
+                placeholder = { Text("Type at least 2 letters") }, modifier = Modifier.width(560.dp).focusRequester(fr),
+                // The keyboard's Search / Enter key closes the keyboard and moves down onto the results.
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search),
+                keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = {
+                    keyboard?.hide(); saveTerm(q)
+                    focusManager.moveFocus(androidx.compose.ui.focus.FocusDirection.Down)
+                }, onDone = { keyboard?.hide(); focusManager.moveFocus(androidx.compose.ui.focus.FocusDirection.Down) }))
             Spacer(Modifier.width(12.dp))
             TvRow(modifier = Modifier.width(150.dp), onClick = { startVoice() }) { RowTitle("🎤 Voice") }
         }
@@ -1268,6 +1304,11 @@ fun SearchScreen(settings: AppSettings, onPlay: (List<Channel>, Channel) -> Unit
             if (q.isEmpty() && settings.bool("search.history")) {
                 itemsIndexed(history) { _, h -> TvRow(onClick = { query = h }) { RowTitle("🕘  $h") } }
             }
+            if (q.length >= 2 && chResults.isEmpty() && progResults.isEmpty() && vodResults.first.isEmpty() && vodResults.second.isEmpty()) {
+                item { Text("Nothing found for \"$q\"", fontSize = 15.sp, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
+                    modifier = Modifier.padding(16.dp)) }
+            }
+            if (chResults.isNotEmpty()) item { SearchHeader("Live channels") }
             itemsIndexed(chResults) { _, c ->
                 TvRow(onClick = { saveTerm(q); onPlay(listOf(c), c) }) {
                     ChannelLogo(settings, c, 40.dp)
@@ -1275,6 +1316,19 @@ fun SearchScreen(settings: AppSettings, onPlay: (List<Channel>, Channel) -> Unit
                     RowTitle(c.name, c.group)
                 }
             }
+            if (vodResults.first.isNotEmpty()) item { SearchHeader("Movies") }
+            itemsIndexed(vodResults.first) { _, m ->
+                TvRow(onClick = { saveTerm(q); onOpenVod(m, true) }) {
+                    RowTitle(m.name, listOfNotNull(m.year, m.category).joinToString(" · "))
+                }
+            }
+            if (vodResults.second.isNotEmpty()) item { SearchHeader("TV shows") }
+            itemsIndexed(vodResults.second) { _, sh ->
+                TvRow(onClick = { saveTerm(q); onOpenVod(sh, false) }) {
+                    RowTitle(sh.name, listOfNotNull(sh.year, sh.category).joinToString(" · "))
+                }
+            }
+            if (progResults.isNotEmpty()) item { SearchHeader("TV programs") }
             itemsIndexed(progResults) { _, (c, p) ->
                 val now = System.currentTimeMillis()
                 val past = p.end <= now
@@ -1292,6 +1346,12 @@ fun SearchScreen(settings: AppSettings, onPlay: (List<Channel>, Channel) -> Unit
         }
     }
     AutoFocus(fr)
+}
+
+@Composable
+private fun SearchHeader(title: String) {
+    Text(title, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(start = 12.dp, top = 14.dp, bottom = 4.dp))
 }
 
 /** Simple full-screen message used for sections that aren't built yet. */
