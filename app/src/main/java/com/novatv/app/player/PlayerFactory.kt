@@ -110,15 +110,20 @@ class PlayerFactory(private val context: Context, private val baseHttp: OkHttpCl
 
     private fun loadControl(size: String): DefaultLoadControl {
         // min, max, bufferForPlayback, bufferForPlaybackAfterRebuffer (ms)
+        // Starts quickly (bufferForPlayback) but keeps a healthy reserve (min/max) so short network
+        // hiccups from the IPTV server don't freeze the picture. The old sizes were far too small
+        // (10 s at most on "Small"), which froze busy channels.
         val (min, max, play, rebuffer) = when (size) {
-            "none" -> listOf(1_000, 3_000, 250, 500)
-            "small" -> listOf(2_500, 10_000, 1_000, 2_000)
-            "large" -> listOf(30_000, 60_000, 2_500, 5_000)
+            "none" -> listOf(3_000, 15_000, 500, 1_500)
+            "small" -> listOf(15_000, 40_000, 1_000, 2_500)
+            "large" -> listOf(40_000, 90_000, 2_500, 5_000)
             "xlarge" -> listOf(60_000, 180_000, 5_000, 8_000)
-            else -> listOf(15_000, 30_000, 1_500, 3_000) // medium
+            else -> listOf(25_000, 60_000, 1_500, 3_000) // medium
         }
         return DefaultLoadControl.Builder()
             .setBufferDurationsMs(min, max, play, rebuffer)
+            // Buffer by time, not by a byte cap: high-bitrate 1080p/4K streams otherwise run dry.
+            .setPrioritizeTimeOverSizeThresholds(true)
             .build()
     }
 
