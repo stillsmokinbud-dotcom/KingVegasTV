@@ -54,7 +54,7 @@ sealed interface Screen {
     data object History : Screen
     data object Reminders : Screen
     data class Multiview(val channelIds: List<String>) : Screen
-    data class Vod(val kind: com.novatv.app.playlist.VodKind) : Screen
+    data class Vod(val kind: com.novatv.app.playlist.VodKind, val start: String? = null) : Screen
     data class MovieDetails(val item: com.novatv.app.playlist.VodItem) : Screen
     data class Series(val item: com.novatv.app.playlist.VodItem) : Screen
     /** Movie or episodes: (resume key, url) list, titles, where to start. */
@@ -156,8 +156,8 @@ private fun AppRoot(settings: AppSettings, onFinish: () -> Unit) {
             MenuDest.RECORDINGS -> push(Screen.Recordings)
             MenuDest.MY_TV_PROGRAMS -> push(Screen.Info("My TV programs", "No programs"))
             MenuDest.MY_REMINDERS -> push(Screen.Reminders)
-            MenuDest.MY_MOVIES -> push(Screen.Info("My movies", "No movies"))
-            MenuDest.MY_SHOWS -> push(Screen.Info("My shows", "No shows"))
+            MenuDest.MY_MOVIES -> push(Screen.Vod(com.novatv.app.playlist.VodKind.MOVIES, com.novatv.app.ui.VOD_MY_LIST))
+            MenuDest.MY_SHOWS -> push(Screen.Vod(com.novatv.app.playlist.VodKind.SHOWS, com.novatv.app.ui.VOD_MY_LIST))
             MenuDest.HISTORY -> push(Screen.History)
             MenuDest.MY_LIST -> push(Screen.Info("My list", "No programs"))
             MenuDest.SETTINGS -> openSettings()
@@ -226,13 +226,16 @@ private fun AppRoot(settings: AppSettings, onFinish: () -> Unit) {
                 val start = screen.channelIds.mapNotNull { id -> all.firstOrNull { it.id == id } }
                 com.novatv.app.ui.MultiviewScreen(settings, start, all, onExit = ::pop)
             }
-            is Screen.Vod -> com.novatv.app.ui.VodBrowseScreen(screen.kind) { item ->
+            is Screen.Vod -> com.novatv.app.ui.VodBrowseScreen(screen.kind, screen.start,
+                onNavigate = { d -> if (d == MenuDest.SETTINGS || d == MenuDest.SEARCH) navigate(d) else { pop(); navigate(d) } }) { item ->
                 push(if (screen.kind == com.novatv.app.playlist.VodKind.MOVIES) Screen.MovieDetails(item) else Screen.Series(item))
             }
             is Screen.MovieDetails -> com.novatv.app.ui.MovieDetailsScreen(screen.item) { fromStart ->
+                app.vod.addHistory(screen.item.id)
                 push(Screen.VodPlayer(listOf(screen.item.id to screen.item.url), listOf(screen.item.name), 0, fromStart))
             }
             is Screen.Series -> com.novatv.app.ui.SeriesScreen(screen.item) { eps, i ->
+                app.vod.addHistory(screen.item.id)
                 push(Screen.VodPlayer(eps.map { it.id to it.url },
                     eps.map { "${screen.item.name} · S${it.season} E${it.number} · ${it.title}" }, i, false))
             }
