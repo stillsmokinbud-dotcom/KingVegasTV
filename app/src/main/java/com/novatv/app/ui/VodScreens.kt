@@ -133,7 +133,7 @@ fun VodBrowseScreen(
             if (d == MenuDest.MY_LIST) category = VOD_MY_LIST else onNavigate(d)
         })
         // Categories
-        Column(Modifier.width(280.dp).fillMaxHeight().background(colors.surface).padding(horizontal = 10.dp, vertical = 12.dp)) {
+        Column(Modifier.width(230.dp).fillMaxHeight().background(colors.surface).padding(horizontal = 8.dp, vertical = 12.dp)) {
             Text(title, fontSize = 22.sp, fontWeight = FontWeight.Medium, color = colors.onSurface,
                 modifier = Modifier.padding(start = 12.dp, top = 8.dp, bottom = 10.dp))
             LazyColumn {
@@ -155,7 +155,7 @@ fun VodBrowseScreen(
                         onClick = { category = key },
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(label, fontSize = 15.sp, color = rowContentColor(), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            Text(label, fontSize = 14.sp, color = rowContentColor(), maxLines = 1, overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.weight(1f))
                             if (count != null) Text("%,d".format(count), fontSize = 13.sp, color = rowContentColor(dimmed = true))
                         }
@@ -177,11 +177,11 @@ fun VodBrowseScreen(
                         else -> "Nothing here"
                     })
                     else LazyVerticalGrid(
-                        // Smaller posters so more titles fit on screen.
-                        columns = GridCells.Adaptive(96.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 20.dp, end = 20.dp, bottom = 20.dp, top = 4.dp),
+                        // TiviMate: seven posters across for movies and shows.
+                        columns = GridCells.Fixed(7),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 16.dp, end = 16.dp, bottom = 20.dp, top = 4.dp),
                         modifier = Modifier.fillMaxSize(),
                     ) {
                         itemsIndexed(shown, key = { _, it -> it.id }) { _, item ->
@@ -336,7 +336,7 @@ private fun PosterCard(item: VodItem, onFocused: () -> Unit = {}, onClick: () ->
         Box(
             Modifier.fillMaxWidth().aspectRatio(2f / 3f).clip(RoundedCornerShape(6.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant)
-                .then(if (focused) Modifier.border(3.dp, accent, RoundedCornerShape(6.dp)) else Modifier),
+                .then(if (focused) Modifier.border(2.dp, accent, RoundedCornerShape(6.dp)) else Modifier),
             contentAlignment = Alignment.Center,
         ) {
             Text(item.name, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
