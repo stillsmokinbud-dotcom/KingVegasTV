@@ -17,7 +17,7 @@ services:
     #   sizeGB: 1
     envVars:
       - key: APP_NAME
-        value: King Vegas TV
+        value: KINGVEGAS TV
       - key: DEVICE_LIMIT
         value: "10"
       - key: PUBLIC_URL
