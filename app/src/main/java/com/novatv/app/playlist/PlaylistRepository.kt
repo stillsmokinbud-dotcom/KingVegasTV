@@ -260,6 +260,18 @@ class PlaylistRepository(
             channels.groupBy { "${plName[it.playlistId] ?: "Playlist"} · ${it.group}" }
         else channels.groupBy { it.group }
         if (s.str("groups.sort") == "name") groupedMap = groupedMap.toSortedMap(String.CASE_INSENSITIVE_ORDER)
+        else {
+            // "By order in playlist": the provider's category order (Xtream get_live_categories), exactly as
+            // TiviMate lists them; playlists without that information keep the order the groups first appear in.
+            val first = HashMap<String, Int>()
+            groupedMap.keys.forEachIndexed { i, k -> first[k] = i }
+            val order = groupedMap.mapValues { (_, list) -> list.minOf { if (it.groupOrder >= 0) it.groupOrder else Int.MAX_VALUE } }
+            if (order.values.any { it != Int.MAX_VALUE }) {
+                groupedMap = groupedMap.entries
+                    .sortedWith(compareBy<Map.Entry<String, List<Channel>>>({ order[it.key] ?: Int.MAX_VALUE }, { first[it.key] ?: 0 }))
+                    .associate { it.key to it.value }
+            }
+        }
         val grouped = groupedMap
             .filter { (g, _) -> showHidden || g !in hiddenGroups }
             .map { (g, list) ->
