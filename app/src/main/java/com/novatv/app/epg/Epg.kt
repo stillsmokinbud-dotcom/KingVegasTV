@@ -28,7 +28,15 @@ class EpgData(
     val byId: Map<String, List<Program>>,
     val nameToId: Map<String, String>,
     val updated: Long,
+    val icons: Map<String, String> = emptyMap(),
 ) {
+    /** The channel's logo from the guide, if it has one. */
+    fun iconFor(c: Channel): String? {
+        if (icons.isEmpty()) return null
+        c.epgId?.lowercase()?.let { id -> icons[id]?.let { return it } }
+        return nameToId[normalizeName(c.name)]?.let { icons[it] }
+    }
+
     val isEmpty: Boolean get() = byId.isEmpty()
 
     /** Channel id -> its programs, filled on first use (the guide asks for the same rows many times per frame). */
