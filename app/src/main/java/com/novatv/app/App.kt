@@ -50,6 +50,9 @@ class App : Application() {
     @Volatile var playGroupIndex: Int = -1
     /** Sleep timer: when the app closes (0 = off). */
     @Volatile var sleepAt: Long = 0L
+    /** Settings › Playlists › Update all playlists: spinning while it runs, then the result under it (TiviMate). */
+    val playlistsUpdating = androidx.compose.runtime.mutableStateOf(false)
+    val playlistsUpdateNote = androidx.compose.runtime.mutableStateOf<String?>(null)
     /** Search box text and the result you opened (Back from it returns to the same search). */
     @Volatile var searchQuery: String = ""
     @Volatile var searchFocus: String? = null
