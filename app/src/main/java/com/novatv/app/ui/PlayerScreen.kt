@@ -170,29 +170,11 @@ fun PlayerScreen(
         repo.markWatched(channel)
     }
 
-    // Freeze watchdog: if the picture (or the whole stream) stops moving while the player says it is
-    // playing, reconnect to the channel. Catches the "picture frozen, sound still playing" case.
-    LaunchedEffect(channel.id) {
-        var lastFrames = -1
-        var lastPos = -1L
-        var stuck = 0
-        while (true) {
-            delay(2000)
-            if (stopped || !player.playWhenReady || player.playbackState != Player.STATE_READY) { stuck = 0; lastFrames = -1; continue }
-            val counters = player.videoDecoderCounters?.also { it.ensureUpdated() }
-            val frames = counters?.renderedOutputBufferCount ?: -1
-            val pos = player.currentPosition
-            val videoStuck = player.videoFormat != null && frames >= 0 && frames == lastFrames
-            val allStuck = pos == lastPos
-            stuck = if (videoStuck || allStuck) stuck + 1 else 0
-            lastFrames = frames; lastPos = pos
-            if (stuck >= 3) { // ~6 seconds without new frames
-                stuck = 0; lastFrames = -1; lastPos = -1
-                player.seekToDefaultPosition()
-                player.prepare()
-                player.playWhenReady = true
-            }
-        }
+    // Freeze / drop-out recovery lives in the shared player (SharedPlayback.Guard): it reconnects
+    // on errors, when the server closes the stream, when loading hangs and when the picture freezes.
+    DisposableEffect(Unit) {
+        app.shared.onReconnectChanged = { on -> error = if (on) "Reconnecting…" else null }
+        onDispose { app.shared.onReconnectChanged = null }
     }
 
     // Channel info banner
@@ -227,16 +209,8 @@ fun PlayerScreen(
     DisposableEffect(player) {
         val listener = object : Player.Listener {
             override fun onPlayerError(e: PlaybackException) {
-                if (e.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
-                    player.seekToDefaultPosition(); player.prepare(); return
-                }
-                if (settings.bool("playback.reconnect") && retries < settings.int("playback.reconnect_tries")) {
-                    retries++
-                    error = "Reconnecting ($retries)…"
-                    scope.launch { delay(2000); player.prepare() }
-                } else {
-                    error = "Can't play this channel.\n${e.errorCodeName}"
-                }
+                // The shared player reconnects by itself and keeps trying (like TiviMate).
+                error = "Reconnecting…"
             }
 
             override fun onPlaybackStateChanged(state: Int) {
