@@ -110,6 +110,10 @@ private fun menuIcon(d: MenuDest): androidx.compose.ui.graphics.vector.ImageVect
 private const val HALF_HOUR = 30 * 60_000L
 private const val HOUR = 60 * 60_000L
 private val CHANNEL_COL = 300.dp
+/** Side menu sizes (TiviMate): icon rail, rail with labels, groups column. */
+private val RAIL_CLOSED = 60.dp
+private val RAIL_OPEN = 210.dp
+private val GROUPS_COL = 250.dp
 
 fun timeText(ts: Long, s: AppSettings, context: android.content.Context): String {
     val pattern = when (s.str("general.clock")) {
@@ -136,6 +140,8 @@ fun GuideScreen(
     onAddPlaylist: () -> Unit,
     /** True while the Settings panel is open on top: the guide stays visible but doesn't take the remote. */
     background: Boolean = false,
+    /** Settings is open on top: TiviMate keeps the side menu (open, with labels) and the groups showing behind it. */
+    menuBehind: Boolean = false,
 ) {
     val context = LocalContext.current
     val app = context.app
@@ -169,6 +175,7 @@ fun GuideScreen(
     var windowStart by remember { mutableLongStateOf(System.currentTimeMillis() / HALF_HOUR * HALF_HOUR) }
     var drawerOpen by remember { mutableStateOf(app.openGuideGroups.also { app.openGuideGroups = false }) }
     var drawerOnMenu by remember { mutableStateOf(false) } // Back opens the drawer on the main menu, Left on the groups
+    var railFocused by remember { mutableStateOf(false) }
     var numberBuffer by remember { mutableStateOf("") }
     var keyLongFired by remember { mutableStateOf(false) }
     var okLongFired by remember { mutableStateOf(false) }
@@ -501,6 +508,14 @@ fun GuideScreen(
             // Only the live guide takes the remote itself; behind Settings or on the welcome screen it must not.
             .focusable(enabled = !background && playlists?.isEmpty() != true)
     ) {
+        // TiviMate: the side menu doesn't cover the guide, it pushes the whole guide to the right
+        // (first the icons + groups; Left again opens the menu with labels and pushes it further).
+        val drawerShown = (drawerOpen && playlists?.isEmpty() != true && !background) || (background && menuBehind && playlists?.isEmpty() != true)
+        val railExpandedNow = (background && menuBehind) || railFocused || groups.isEmpty()
+        val push by androidx.compose.animation.core.animateDpAsState(
+            if (!drawerShown) 0.dp else (if (railExpandedNow) RAIL_OPEN else RAIL_CLOSED) + GROUPS_COL,
+            androidx.compose.animation.core.tween(200, easing = androidx.compose.animation.core.FastOutSlowInEasing), label = "push")
+        Box(Modifier.fillMaxSize().offset { androidx.compose.ui.unit.IntOffset(push.roundToPx(), 0) }) {
         when {
             playlists?.isEmpty() == true -> Welcome(onAddPlaylist, onSettings = { onNavigate(MenuDest.SETTINGS) }, background = background)
             group == null || chs.isEmpty() -> CenterMessage(
@@ -528,14 +543,13 @@ fun GuideScreen(
                 }
             }
         }
+        }
 
         // Slides in from the left (TiviMate); animated so it doesn't "jump" onto the screen.
         androidx.compose.animation.AnimatedVisibility(
-            visible = drawerOpen && playlists?.isEmpty() != true && !background,
-            enter = androidx.compose.animation.slideInHorizontally(androidx.compose.animation.core.tween(200)) { -it / 3 } +
-                androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(160)),
-            exit = androidx.compose.animation.slideOutHorizontally(androidx.compose.animation.core.tween(160)) { -it / 3 } +
-                androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(140)),
+            visible = drawerShown,
+            enter = androidx.compose.animation.slideInHorizontally(androidx.compose.animation.core.tween(200, easing = androidx.compose.animation.core.FastOutSlowInEasing)) { -it },
+            exit = androidx.compose.animation.slideOutHorizontally(androidx.compose.animation.core.tween(200, easing = androidx.compose.animation.core.FastOutSlowInEasing)) { -it },
         ) {
             SideDrawer(
                 groups = groups, groupIndex = groupIndex,
@@ -546,6 +560,9 @@ fun GuideScreen(
                 onMenu = { d -> drawerOpen = false; if (d != MenuDest.GUIDE) onNavigate(d) },
                 onClose = { drawerOpen = false },
                 focusMenu = drawerOnMenu,
+                expanded = railExpandedNow,
+                onRailFocus = { railFocused = it },
+                passive = background,
             )
         }
 
@@ -868,7 +885,7 @@ private fun GuideTimeline(settings: AppSettings, now: Long, windowStart: Long, w
     val colors = MaterialTheme.colorScheme
     Row(Modifier.fillMaxWidth().height(headerH)) {
         Text(dateTimeText(now, settings, context), fontSize = 14.sp, fontWeight = FontWeight.Medium,
-            color = colors.onBackground.copy(alpha = 0.9f), maxLines = 1,
+            color = colors.primary, maxLines = 1,
             overflow = TextOverflow.Ellipsis, modifier = Modifier.width(CHANNEL_COL).padding(start = 24.dp, top = 8.dp))
         Box(Modifier.width(progWidth).fillMaxHeight()) {
             val dayOf = { ts: Long -> java.util.Calendar.getInstance().apply { timeInMillis = ts }.get(java.util.Calendar.DAY_OF_YEAR) }
@@ -981,17 +998,22 @@ private fun SideDrawer(
     onMenu: (MenuDest) -> Unit,
     onClose: () -> Unit,
     focusMenu: Boolean = false,
+    expanded: Boolean = false,
+    onRailFocus: (Boolean) -> Unit = {},
+    /** Shown behind Settings: just a picture, never takes the remote. */
+    passive: Boolean = false,
 ) {
     val context = LocalContext.current
     val groupFocus = remember { FocusRequester() }
     val menuFocus = remember { FocusRequester() }
-    var railExpanded by remember { mutableStateOf(groups.isEmpty()) }
+    val railExpanded = expanded
+    DisposableEffect(Unit) { onDispose { onRailFocus(false) } }
     var myListOpen by remember { mutableStateOf(false) }
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = (groupIndex - 4).coerceAtLeast(0))
     val colors = MaterialTheme.colorScheme
     val railBg = colors.surfaceVariant
     val railWidth by androidx.compose.animation.core.animateDpAsState(
-        if (railExpanded) 230.dp else 72.dp, androidx.compose.animation.core.tween(170), label = "rail")
+        if (railExpanded) RAIL_OPEN else RAIL_CLOSED, androidx.compose.animation.core.tween(200, easing = androidx.compose.animation.core.FastOutSlowInEasing), label = "rail")
     Row(Modifier.fillMaxHeight()) {
         // Icon rail; expands to show labels (TiviMate's main menu) when it has focus.
         Column(
@@ -1000,13 +1022,13 @@ private fun SideDrawer(
                 .fillMaxHeight()
                 .clipToBounds()
                 .background(railBg)
-                .onFocusChanged { railExpanded = it.hasFocus || groups.isEmpty() }
-                .padding(horizontal = 8.dp, vertical = 22.dp)
+                .onFocusChanged { onRailFocus(it.hasFocus) }
+                .padding(horizontal = 6.dp, vertical = 22.dp)
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 8.dp, bottom = 30.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 4.dp, bottom = 60.dp)) {
                 androidx.compose.foundation.Image(
                     androidx.compose.ui.res.painterResource(com.novatv.app.R.drawable.app_logo), contentDescription = null,
-                    modifier = Modifier.size(40.dp).clip(RoundedCornerShape(8.dp)),
+                    modifier = Modifier.size(34.dp).clip(RoundedCornerShape(8.dp)),
                 )
                 if (railExpanded) Text(context.getString(com.novatv.app.R.string.app_name), fontSize = 18.sp,
                     fontWeight = FontWeight.Bold, color = Color(0xFFFFD666), maxLines = 1, modifier = Modifier.padding(start = 12.dp))
@@ -1030,15 +1052,16 @@ private fun SideDrawer(
             }
         }
         if (railExpanded && myListOpen) {
-            Column(Modifier.width(260.dp).fillMaxHeight().background(colors.surface).padding(horizontal = 10.dp, vertical = 26.dp),
+            Column(Modifier.width(GROUPS_COL).fillMaxHeight().background(colors.background).padding(horizontal = 12.dp, vertical = 26.dp),
                 verticalArrangement = Arrangement.Center) {
                 MY_LIST_MENU.forEach { d ->
                     TvRow(onClick = { onMenu(d) }) { Text(d.label, fontSize = 16.sp, color = rowContentColor()) }
                 }
             }
         } else if (groups.isNotEmpty()) {
-            Column(Modifier.width(320.dp).fillMaxHeight().background(colors.background.copy(alpha = 0.96f))
-                .padding(horizontal = 10.dp, vertical = 26.dp)) {
+            // TiviMate: the groups sit on the guide's own background, starting level with the channel rows.
+            Column(Modifier.width(GROUPS_COL).fillMaxHeight().background(colors.background)
+                .padding(start = 12.dp, end = 12.dp, top = 250.dp, bottom = 12.dp)) {
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.onPreviewKeyEvent { e ->
@@ -1060,6 +1083,7 @@ private fun SideDrawer(
         }
     }
     LaunchedEffect(Unit) {
+        if (passive) return@LaunchedEffect
         delay(30)
         if (groups.isNotEmpty() && !focusMenu) runCatching { groupFocus.requestFocus() } else runCatching { menuFocus.requestFocus() }
     }
