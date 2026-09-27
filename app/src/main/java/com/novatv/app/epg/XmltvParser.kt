@@ -19,6 +19,8 @@ class XmltvParser(
 ) {
     val programs = HashMap<String, MutableList<Program>>()
     val nameToId = HashMap<String, String>()
+    /** Channel logos from the guide (<icon src="…">), for Appearance › Logos › Prefer logos from EPG. */
+    val icons = HashMap<String, String>()
     private val namedIds = HashSet<String>()
 
     fun parse(raw: InputStream): Int {
@@ -45,6 +47,9 @@ class XmltvParser(
         val id = p.getAttributeValue(null, "id")?.lowercase() ?: return
         val depth = p.depth
         while (!(p.next() == XmlPullParser.END_TAG && p.depth == depth)) {
+            if (p.eventType == XmlPullParser.START_TAG && p.name == "icon") {
+                p.getAttributeValue(null, "src")?.takeIf { it.startsWith("http") }?.let { if (id !in icons) icons[id] = it }
+            }
             if (p.eventType == XmlPullParser.START_TAG && p.name == "display-name") {
                 val n = EpgData.normalizeName(p.nextText())
                 if (n in wantedNames && n !in nameToId) {
