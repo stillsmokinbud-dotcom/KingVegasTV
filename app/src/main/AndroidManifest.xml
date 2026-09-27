@@ -12,6 +12,19 @@
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <!-- Voice search (the remote's microphone), like TiviMate -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+
+    <!-- Android 11+: lets the app find the device's speech recognizer for voice search -->
+    <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+        <intent>
+            <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
+        </intent>
+    </queries>
 
     <!-- Runs on TV boxes (no touchscreen) and still installs on phones/tablets -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
