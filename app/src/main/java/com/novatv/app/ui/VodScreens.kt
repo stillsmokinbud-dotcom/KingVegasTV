@@ -177,10 +177,11 @@ fun VodBrowseScreen(
                         else -> "Nothing here"
                     })
                     else LazyVerticalGrid(
-                        columns = GridCells.Adaptive(132.dp),
-                        verticalArrangement = Arrangement.spacedBy(14.dp),
-                        horizontalArrangement = Arrangement.spacedBy(14.dp),
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 24.dp, end = 24.dp, bottom = 24.dp, top = 4.dp),
+                        // Smaller posters so more titles fit on screen.
+                        columns = GridCells.Adaptive(96.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 20.dp, end = 20.dp, bottom = 20.dp, top = 4.dp),
                         modifier = Modifier.fillMaxSize(),
                     ) {
                         itemsIndexed(shown, key = { _, it -> it.id }) { _, item ->
@@ -249,7 +250,7 @@ private fun VodHero(item: VodItem) {
         if (value == null) { delay(300); value = vod.info(item) } // don't hit the server for every poster you pass
     }
     val bg = colors.background
-    Box(Modifier.fillMaxWidth().height(270.dp)) {
+    Box(Modifier.fillMaxWidth().height(210.dp)) {
         val backdrop = info?.backdrop ?: item.poster
         if (backdrop != null) {
             Box(Modifier.align(Alignment.TopEnd).fillMaxHeight().fillMaxWidth(0.62f)) {
@@ -261,10 +262,10 @@ private fun VodHero(item: VodItem) {
                     0.6f to Color.Transparent, 1f to bg)))
             }
         }
-        Column(Modifier.fillMaxWidth(0.62f).padding(start = 28.dp, top = 22.dp, end = 12.dp)) {
+        Column(Modifier.fillMaxWidth(0.62f).padding(start = 24.dp, top = 14.dp, end = 12.dp)) {
             val year = item.year ?: info?.year
             Text(item.name + if (year != null && !item.name.contains("($year)")) " ($year)" else "",
-                fontSize = 26.sp, fontWeight = FontWeight.Bold, color = colors.onBackground,
+                fontSize = 22.sp, fontWeight = FontWeight.Bold, color = colors.onBackground,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
                 (item.rating ?: info?.rating)?.let { RatingBadge(it); Spacer(Modifier.width(10.dp)) }
@@ -275,8 +276,8 @@ private fun VodHero(item: VodItem) {
             info?.cast?.let { InfoLine("Cast", it) }
             info?.director?.let { InfoLine("Director", it) }
             (info?.plot ?: item.plot)?.let {
-                Text(it, fontSize = 14.sp, lineHeight = 19.sp, maxLines = 4, overflow = TextOverflow.Ellipsis,
-                    color = colors.onBackground.copy(alpha = 0.85f), modifier = Modifier.padding(top = 10.dp))
+                Text(it, fontSize = 13.sp, lineHeight = 17.sp, maxLines = 3, overflow = TextOverflow.Ellipsis,
+                    color = colors.onBackground.copy(alpha = 0.85f), modifier = Modifier.padding(top = 8.dp))
             }
         }
     }
@@ -305,8 +306,8 @@ private fun RatingBadge(rating: String, small: Boolean = false) {
         v >= 5f -> Color(0xFFE0A100)
         else -> Color(0xFFD64541)
     }
-    Box(Modifier.clip(RoundedCornerShape(4.dp)).background(color).padding(horizontal = if (small) 5.dp else 7.dp, vertical = 2.dp)) {
-        Text(text, fontSize = if (small) 11.sp else 13.sp, fontWeight = FontWeight.Bold, color = Color.White)
+    Box(Modifier.clip(RoundedCornerShape(4.dp)).background(color).padding(horizontal = if (small) 4.dp else 7.dp, vertical = if (small) 1.dp else 2.dp)) {
+        Text(text, fontSize = if (small) 10.sp else 13.sp, fontWeight = FontWeight.Bold, color = Color.White)
     }
 }
 
@@ -342,9 +343,9 @@ private fun PosterCard(item: VodItem, onFocused: () -> Unit = {}, onClick: () ->
                 modifier = Modifier.padding(8.dp), maxLines = 4)
             if (item.poster != null) AsyncImage(item.poster, contentDescription = item.name, contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize())
-            item.rating?.let { Box(Modifier.align(Alignment.TopStart).padding(6.dp)) { RatingBadge(it, small = true) } }
+            item.rating?.let { Box(Modifier.align(Alignment.TopStart).padding(4.dp)) { RatingBadge(it, small = true) } }
         }
-        Text(item.name, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+        Text(item.name, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
             color = if (focused) MaterialTheme.colorScheme.onBackground else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
             modifier = Modifier.padding(top = 4.dp))
     }
