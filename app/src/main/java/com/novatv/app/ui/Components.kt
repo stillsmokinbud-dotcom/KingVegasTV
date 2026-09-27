@@ -179,7 +179,7 @@ fun SidePanel(title: String, width: Dp = 400.dp, content: @Composable () -> Unit
     val colors = MaterialTheme.colorScheme
     // Slides in from the right once when the panel opens (drawn on the GPU layer: no re-layout per frame).
     val slide = remember { androidx.compose.animation.core.Animatable(1f) }
-    LaunchedEffect(Unit) { slide.animateTo(0f, androidx.compose.animation.core.tween(210)) }
+    LaunchedEffect(Unit) { slide.animateTo(0f, androidx.compose.animation.core.tween(280, easing = androidx.compose.animation.core.FastOutSlowInEasing)) }
     // TiviMate: the screen behind stays visible (only lightly dimmed) and the panel is a lighter grey.
     Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.18f))) {
         Column(
