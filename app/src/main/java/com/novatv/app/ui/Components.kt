@@ -72,6 +72,8 @@ val LocalRowFocused = compositionLocalOf { false }
 
 /** Settings › Appearance › Color theme › Selection color: White (TiviMate default) or the accent color. */
 val LocalSelectionWhite = compositionLocalOf { true }
+/** Inside a settings side panel: smaller text and rows, like TiviMate's panels. */
+val LocalPanelCompact = compositionLocalOf { false }
 
 /** Text color for content inside a [TvRow]: dark on the white selection, white otherwise. */
 @Composable
@@ -143,7 +145,7 @@ fun TvRow(
                 }
             }
             .combinedClickable(enabled = enabled, onClick = onClick, onLongClick = onLongClick)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(horizontal = if (LocalPanelCompact.current) 14.dp else 16.dp, vertical = if (LocalPanelCompact.current) 7.dp else 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         CompositionLocalProvider(
@@ -155,14 +157,15 @@ fun TvRow(
 
 @Composable
 fun RowTitle(title: String, summary: String? = null, dim: Boolean = false, modifier: Modifier = Modifier) {
+    val compact = LocalPanelCompact.current
     Column(modifier) {
         Text(
-            title, fontSize = 17.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
+            title, fontSize = if (compact) 15.sp else 17.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
             color = rowContentColor(dimmed = dim),
         )
         if (!summary.isNullOrBlank()) {
             Text(
-                summary, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                summary, fontSize = if (compact) 12.sp else 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
                 color = rowContentColor(dimmed = true),
             )
         }
@@ -178,8 +181,8 @@ fun RowTitle(title: String, summary: String? = null, dim: Boolean = false, modif
 @Composable
 fun SidePanel(
     title: String,
-    // TiviMate's panel is a bit under 40% of the screen wide (≈ 365 dp on a TV).
-    width: Dp = 365.dp,
+    // TiviMate's settings panel: about a third of the screen wide, with compact rows.
+    width: Dp = 330.dp,
     /** True = slide back out to the right, then call [onClosed] (TiviMate closes its panels the same way it opens them). */
     closing: Boolean = false,
     onClosed: () -> Unit = {},
@@ -213,7 +216,7 @@ fun SidePanel(
             Box(
                 Modifier.fillMaxWidth().background(Color.White.copy(alpha = 0.07f)).padding(start = 28.dp, end = 20.dp, top = 30.dp, bottom = 18.dp)
             ) {
-                Text(title, fontSize = 24.sp, fontWeight = FontWeight.Medium, color = colors.onSurface,
+                Text(title, fontSize = 21.sp, fontWeight = FontWeight.Medium, color = colors.onSurface,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             // Keep the remote inside the panel (Left must not jump to the screen behind it).
@@ -222,7 +225,7 @@ fun SidePanel(
                     .focusProperties { exit = { androidx.compose.ui.focus.FocusRequester.Cancel } }
                     .focusGroup()
                     .padding(horizontal = 10.dp, vertical = 8.dp)
-            ) { content() }
+            ) { CompositionLocalProvider(LocalPanelCompact provides true) { content() } }
         }
     }
 }
