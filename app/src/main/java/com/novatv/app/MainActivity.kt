@@ -130,7 +130,12 @@ class MainActivity : ComponentActivity() {
                 // Appearance › Language: dates, times and number formats follow the chosen language.
                 val lang = s.str("general.language")
                 androidx.compose.runtime.remember(lang) { applyLanguage(lang) }
-                AppTheme(s) { AppRoot(s, onFinish = { finish() }) }
+                // One live-TV picture for the whole app, underneath every screen (no black flashes
+                // when moving between the guide, full screen and Settings).
+                Box(Modifier.fillMaxSize().background(Color.Black)) {
+                    com.novatv.app.ui.SharedVideoLayer(s)
+                    AppTheme(s) { AppRoot(s, onFinish = { finish() }) }
+                }
             }
         }
     }
@@ -250,13 +255,15 @@ private fun AppRoot(settings: AppSettings, onFinish: () -> Unit) {
             )
             Screen.Premium -> PremiumAccountScreen(settings, onClose = ::pop)
             Screen.GetPremium -> GetPremiumScreen(onClose = ::pop)
-            Screen.Search -> SearchScreen(settings) { queue, channel ->
+            Screen.Search -> SearchScreen(settings, onPlay = { queue, channel ->
                 app.playQueue = queue
                 // Other › Search › "Stay on search screen when switching channels": otherwise Back from
                 // the player goes to the guide, not back to Search.
                 if (!settings.bool("search.stay")) pop()
                 push(Screen.Player(channel.id))
-            }
+            }, onOpenVod = { item, isMovie ->
+                push(if (isMovie) Screen.MovieDetails(item) else Screen.Series(item))
+            })
             is Screen.Info -> InfoScreen(screen.title, screen.text)
             is Screen.AddPlaylist -> AddPlaylistScreen(
                 type = screen.type,
