@@ -192,6 +192,15 @@ fun SettingsScreen(
                 "This app doesn't collect statistics or personal data. Your playlists, logins and settings stay on this device. " +
                 "Signing in to a Premium account sends your email address and device name to the account server, " +
                 "only to check your subscription and list your devices."
+            SettingAction.CHECK_UPDATES -> {
+                message = "Check for updates" to "Checking…"
+                scope.launch {
+                    val r = com.novatv.app.update.Updater.check(playlists.http)
+                    if (r == null) message = "Check for updates" to
+                        "You have the latest version (1.0.${com.novatv.app.BuildConfig.VERSION_CODE})."
+                    else { message = null; com.novatv.app.update.Updater.offer(r) }
+                }
+            }
             SettingAction.DEVICE_INFO, SettingAction.VERSION_INFO -> Unit
             else -> onOpen(action)
         }
