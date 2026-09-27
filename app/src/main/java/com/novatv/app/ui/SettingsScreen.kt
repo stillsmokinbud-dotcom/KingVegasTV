@@ -413,6 +413,11 @@ private fun LazyListScope.dynamicRows(key: String, s: AppSettings, push: (Page) 
     item(key = key) {
         val app = LocalContext.current.app
         val all by app.playlists.playlists.collectAsState(initial = emptyList())
+        // Re-read the counts whenever movies/shows finish loading.
+        val vodMovies by app.vod.movies.collectAsState()
+        val vodShows by app.vod.series.collectAsState()
+        val vodStatus by app.vod.status.collectAsState()
+        val vodProblems by app.vod.problems.collectAsState()
         val list = if (s.str("playlists.sort") == "name") all.sortedBy { it.name.lowercase() } else all
         androidx.compose.foundation.layout.Column {
             PlaylistType.entries.forEach { type ->
@@ -422,7 +427,8 @@ private fun LazyListScope.dynamicRows(key: String, s: AppSettings, push: (Page) 
                     ofType.forEach { p ->
                         PanelRow(
                             p.name,
-                            "Channels: ${app.playlists.channelCount(p.id)}, movies: ${app.vod.countFor(p.id, com.novatv.app.playlist.VodKind.MOVIES)}, shows: ${app.vod.countFor(p.id, com.novatv.app.playlist.VodKind.SHOWS)}",
+                            "Channels: ${app.playlists.channelCount(p.id)}, movies: ${vodMovies.count { it.playlistId == p.id }}, shows: ${vodShows.count { it.playlistId == p.id }}" +
+                                (vodStatus?.let { "\n$it" } ?: vodProblems[p.id]?.let { "\nMovies: $it" } ?: ""),
                             leading = {
                                 Icon(if (p.enabled) Icons.Filled.CheckCircle else Icons.Outlined.Circle, null,
                                     tint = if (p.enabled) androidx.compose.material3.MaterialTheme.colorScheme.primary else rowContentColor(true))
