@@ -513,9 +513,14 @@ fun VodPlayerScreen(
         app.vod.saveResume(key, player.currentPosition, player.duration.coerceAtLeast(0))
     }
 
+    // Catch-up (archive) playback comes through here too ("url:" keys); movies and episodes otherwise.
+    val catchup = items.firstOrNull()?.first?.startsWith("url:") == true
     LaunchedEffect(index) {
         error = null
         val (key, url) = items[index]
+        // Settings › Playback › Use external player (For VOD / For TV and VOD)
+        if (!catchup && com.novatv.app.player.ExternalPlayer.wanted(settings, vod = true) &&
+            com.novatv.app.player.ExternalPlayer.open(context, url, titles.getOrElse(index) { "" })) { onExit(); return@LaunchedEffect }
         player.setMediaItem(androidx.media3.common.MediaItem.fromUri(url))
         player.prepare()
         val pos = if (fromStart && index == start) 0L else app.vod.resumePosition(key)
@@ -530,20 +535,60 @@ fun VodPlayerScreen(
             override fun onPlaybackStateChanged(state: Int) {
                 if (state == Player.STATE_ENDED) {
                     app.vod.saveResume(items[index].first, Long.MAX_VALUE, 1)
-                    if (index + 1 < items.size) index++ else onExit()
+                    // Settings › Other › VOD › Autoplay next episode
+                    if (index + 1 < items.size && settings.bool("vod.autoplay_next")) index++ else onExit()
                 }
             }
             override fun onPlayerError(e: androidx.media3.common.PlaybackException) {
                 error = "Can't play this.\n${e.errorCodeName}"
             }
+            // Settings › Playback › Auto frame rate › Enable for VOD
+            override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
+                com.novatv.app.player.Afr.apply(context as? android.app.Activity, settings, player.videoFormat, vod = !catchup)
+            }
         }
         player.addListener(l)
-        onDispose { saveResume(); player.removeListener(l); player.release() }
+        onDispose {
+            com.novatv.app.player.Afr.reset(context as? android.app.Activity)
+            saveResume(); player.removeListener(l); player.release()
+        }
     }
     BackHandler { saveResume(); onExit() }
 
+    // Skip steps (short press / hold) and Remote control › Seeking options while watching catch-up.
+    val shortStep = settings.int("playback.skip_short").coerceAtLeast(1) * 1000L
+    val longStep = settings.int("playback.skip_long").coerceAtLeast(1) * 1000L
+    fun seek(forward: Boolean, long: Boolean) {
+        val step = if (long) longStep else shortStep
+        player.seekTo((player.currentPosition + if (forward) step else -step).coerceAtLeast(0))
+    }
     Box(
         Modifier.fillMaxSize().background(Color.Black)
+            .onPreviewKeyEvent { e ->
+                if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                val held = e.nativeKeyEvent.repeatCount > 0
+                when (e.key) {
+                    Key.MediaRewind, Key.MediaFastForward -> {
+                        if (catchup && !settings.bool("remote.seek_rw_ff")) return@onPreviewKeyEvent true
+                        seek(e.key == Key.MediaFastForward, held); true
+                    }
+                    Key.MediaPlayPause, Key.MediaPause, Key.MediaPlay -> {
+                        if (catchup && !settings.bool("remote.seek_rw_ff")) return@onPreviewKeyEvent true
+                        false
+                    }
+                    Key.DirectionLeft, Key.DirectionRight -> {
+                        if (catchup && settings.bool("remote.seek_left_right") && viewRef?.isControllerFullyVisible != true) {
+                            seek(e.key == Key.DirectionRight, held); true
+                        } else false
+                    }
+                    Key.DirectionUp, Key.DirectionDown -> {
+                        if (catchup && settings.bool("remote.seek_up_down") && viewRef?.isControllerFullyVisible != true) {
+                            seek(e.key == Key.DirectionUp, true); true
+                        } else false
+                    }
+                    else -> false
+                }
+            }
             // If focus ever lands on the Compose side, pass remote keys on to the player controls.
             .onKeyEvent { e -> e.key != Key.Back && viewRef?.let { v -> !v.hasFocus() && v.dispatchKeyEvent(e.nativeKeyEvent) } == true }
             .focusable(),
