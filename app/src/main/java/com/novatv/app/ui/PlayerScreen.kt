@@ -114,7 +114,9 @@ fun PlayerScreen(
         recentIds.mapNotNull { byId[it] }
     }
 
-    val built = remember { PlayerFactory(context, repo.http).create(settings, DEFAULT_USER_AGENT) }
+    // Shared with the guide preview: Back to the guide keeps the same stream playing (TiviMate).
+    val built = remember { app.shared.obtain(settings) }
+    DisposableEffect(Unit) { app.shared.attach(); onDispose { app.shared.detach() } }
     val player = built.player
     val channel = queue[index.coerceIn(queue.indices)]
     val overlayAlpha = (1f - settings.int("appearance.overlay_opacity") / 100f).coerceIn(0.25f, 1f)
@@ -135,11 +137,15 @@ fun PlayerScreen(
     LaunchedEffect(channel.id) {
         val pl = repo.playlistFor(channel)
         val ua = channel.userAgent?.takeIf { it.isNotBlank() } ?: repo.userAgentFor(pl, settings)
-        built.dataSource.setUserAgent(ua)
         error = null
         retries = 0
-        player.setMediaItem(PlayerFactory.mediaItem(PlayerFactory.viaUdpProxy(channel.url, settings)))
-        player.prepare()
+        if (!app.shared.isPlaying(channel.id)) {
+            built.dataSource.setUserAgent(ua)
+            player.setMediaItem(PlayerFactory.mediaItem(PlayerFactory.viaUdpProxy(channel.url, settings)))
+            player.prepare()
+            app.shared.markLoaded(channel.id)
+        }
+        player.volume = 1f
         player.playWhenReady = true
         stopped = false
         bannerTick++
@@ -224,7 +230,7 @@ fun PlayerScreen(
         player.addListener(listener)
         onDispose {
             player.removeListener(listener)
-            player.release()
+            // Not released: the guide preview keeps showing this channel.
         }
     }
 
@@ -381,10 +387,12 @@ fun PlayerScreen(
                     keepScreenOn = true
                     isFocusable = false
                     descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+                    setKeepContentOnPlayerReset(true)
                     this.player = player
                 }
             },
             update = { it.resizeMode = resizeModeFor(aspect) },
+            onRelease = { it.player = null },
             modifier = Modifier.fillMaxSize(),
         )
 
