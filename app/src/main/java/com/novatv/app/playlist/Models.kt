@@ -47,6 +47,12 @@ data class Playlist(
     val catchupOffset: String = "0:00:00",
     /** Xtream: load live TV channels. */
     val includeLive: Boolean = true,
+    /** Stalker only (all optional): account login, device ids and serial number. */
+    val stalkerUser: String = "",
+    val stalkerPass: String = "",
+    val deviceId: String = "",
+    val deviceId2: String = "",
+    val serial: String = "",
     /** "default", "playlist", "name". */
     val groupsSort: String = "default",
     /** New groups found on update are shown (on) or hidden (off). */
@@ -75,6 +81,9 @@ data class Channel(
     val catchupSource: String? = null,
     val userAgent: String? = null,
     val isAdult: Boolean = false,
+    /** Position of the channel's category in the provider's own category list (Xtream), so groups show
+     *  in the provider's order like TiviMate; -1 = not known (M3U: order of first appearance). */
+    val groupOrder: Int = -1,
 )
 
 @Serializable
