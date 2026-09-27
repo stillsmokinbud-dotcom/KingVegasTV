@@ -23,6 +23,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -641,7 +643,10 @@ fun GuideScreen(
                     // Leave the menu open underneath: when that screen closes, the guide comes back as it was.
                     else { app.guideMenuReturn = d; onNavigate(d) }
                 },
-                onClose = { drawerOpen = false },
+                onClose = {
+                    drawerOpen = false
+                    groups.getOrNull(groupIndex)?.let { g -> scope.launch { app.settings.set(DataKeys.LAST_GROUP, g.name) } }
+                },
                 focusMenu = drawerOnMenu,
                 focusDest = menuReturn,
                 expanded = railExpandedNow,
@@ -867,9 +872,9 @@ private fun PreviewVideo(settings: AppSettings, channel: Channel, instant: Boole
     val app = context.app
     val repo = app.playlists
     // Same player as full screen: coming back to the guide doesn't restart the stream.
-    val built = remember { app.shared.obtain(settings) }
+    val built = remember(PlayerFactory.signature(settings)) { app.shared.obtain(settings) }
     DisposableEffect(Unit) { app.shared.attach(); onDispose { app.shared.detach() } }
-    LaunchedEffect(channel.id) {
+    LaunchedEffect(channel.id, built) {
         if (app.shared.isPlaying(channel.id)) { built.player.playWhenReady = true; return@LaunchedEffect }
         if (!instant) delay(700) // don't start a stream for every channel you scroll past
         built.dataSource.setUserAgent(channel.userAgent ?: repo.userAgentFor(repo.playlistFor(channel), settings))
@@ -1305,13 +1310,19 @@ private fun CenterMessage(title: String, text: String) {
     }
 }
 
-/** Search (side menu → Search): channels and upcoming programs. */
+/**
+ * Search, like TiviMate: it starts listening as soon as it opens (speak, or type in the box), and the
+ * results come up in rows — Movies and Shows as posters, Channels as tiles, and Programs as channels
+ * on the left, their matching programs in the middle and the details of the highlighted one on the right.
+ * Coming back from a movie / show / channel, the same search and results are still there.
+ */
 @Composable
 fun SearchScreen(
     settings: AppSettings,
     onPlay: (List<Channel>, Channel) -> Unit,
     /** Opens a movie (details) or a TV show (seasons & episodes). */
     onOpenVod: (com.novatv.app.playlist.VodItem, Boolean) -> Unit = { _, _ -> },
+    onOpenSettings: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val app = context.app
@@ -1321,37 +1332,112 @@ fun SearchScreen(
     val favorites by remember(DataKeys.FAVORITES) { app.settings.listFlow(DataKeys.FAVORITES) }.collectAsState(initial = emptyList())
     val history by remember(DataKeys.SEARCH_HISTORY) { app.settings.listFlow(DataKeys.SEARCH_HISTORY) }.collectAsState(initial = emptyList())
     val playUrl = LocalPlayUrl.current
-    var query by remember { mutableStateOf("") }
-    val fr = remember { FocusRequester() }
+    // Kept in the app, so Back from a movie / show / channel comes back to the same results.
+    var query by remember { mutableStateOf(app.searchQuery) }
+    androidx.compose.runtime.SideEffect { app.searchQuery = query }
     val q = query.trim()
-    // Other › Search › "Prefer voice search": open the microphone right away.
-    val voice = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { r ->
-        r.data?.getStringArrayListExtra(android.speech.RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()?.let { query = it }
-    }
-    fun startVoice() = runCatching {
-        voice.launch(android.content.Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
-            .putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL, android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM))
-    }
-    LaunchedEffect(Unit) { if (settings.bool("search.voice")) startVoice() }
+    val fieldFocus = remember { FocusRequester() }
+    val boxFocus = remember { FocusRequester() }
+    val micFocus = remember { FocusRequester() }
+    var editing by remember { mutableStateOf(false) }
+    val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
+
     fun saveTerm(term: String) {
-        if (!settings.bool("search.history") || term.length < 2) return
-        scope.launch { app.settings.setList(DataKeys.SEARCH_HISTORY, (listOf(term) + history.filterNot { it.equals(term, true) }).take(20)) }
+        val t = term.trim()
+        if (!settings.bool("search.history") || t.length < 2) return
+        scope.launch { app.settings.setList(DataKeys.SEARCH_HISTORY, (listOf(t) + history.filterNot { it.equals(t, true) }).take(20)) }
     }
-    // Searched off the main thread (17,000+ channels and their programs), shortly after typing stops.
-    val chResults by produceState(emptyList<Channel>(), q, channels, favorites) {
-        if (q.length < 2) { value = emptyList(); return@produceState }
-        delay(200)
-        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-            val found = channels.filter { it.name.contains(q, ignoreCase = true) }
-            // Other › Search › "Show favorite channels first"
-            (if (settings.bool("search.fav_first")) { val fav = favorites.toSet(); found.sortedBy { if (it.id in fav) 0 else 1 } } else found).take(100)
+    // Keyboard's Search key: close it and go down onto the results.
+    fun finishTyping() {
+        keyboard?.hide(); saveTerm(query); editing = false
+        scope.launch {
+            delay(40); runCatching { boxFocus.requestFocus() }
+            delay(20); focusManager.moveFocus(androidx.compose.ui.focus.FocusDirection.Down)
         }
     }
-    // Movies and TV shows from the playlists (Xtream) are searched too.
+
+    // ---- Voice: listens inside the app (the words appear in the box as you speak), like TiviMate.
+    // Devices without Android's speech service use the system voice screen instead.
+    var listening by remember { mutableStateOf(false) }
+    val listenRef = remember { arrayOfNulls<() -> Unit>(1) }
+    val systemVoice = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { r ->
+        r.data?.getStringArrayListExtra(android.speech.RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()?.let { query = it; saveTerm(it) }
+    }
+    fun systemVoiceSearch() {
+        runCatching {
+            systemVoice.launch(android.content.Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+                .putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL, android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM))
+        }.onFailure {
+            android.widget.Toast.makeText(context, "Voice search isn't available on this device. Type to search.", android.widget.Toast.LENGTH_SHORT).show()
+            editing = true
+        }
+    }
+    val micPermission = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()) { ok ->
+        if (ok) listenRef[0]?.invoke() else systemVoiceSearch()
+    }
+    val recognizer = remember {
+        runCatching {
+            if (android.speech.SpeechRecognizer.isRecognitionAvailable(context)) android.speech.SpeechRecognizer.createSpeechRecognizer(context) else null
+        }.getOrNull()
+    }
+    DisposableEffect(recognizer) { onDispose { runCatching { recognizer?.destroy() } } }
+    fun listen() {
+        val r = recognizer ?: return systemVoiceSearch()
+        if (androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.RECORD_AUDIO)
+            != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            micPermission.launch(android.Manifest.permission.RECORD_AUDIO); return
+        }
+        r.setRecognitionListener(object : android.speech.RecognitionListener {
+            fun text(b: android.os.Bundle?) = b?.getStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.takeIf { it.isNotBlank() }
+            override fun onReadyForSpeech(params: android.os.Bundle?) { listening = true }
+            override fun onBeginningOfSpeech() { listening = true }
+            override fun onRmsChanged(rmsdB: Float) {}
+            override fun onBufferReceived(buffer: ByteArray?) {}
+            override fun onEndOfSpeech() { listening = false }
+            override fun onError(error: Int) {
+                listening = false
+                // No permission / no service after all: the system voice screen still works.
+                if (error == android.speech.SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) systemVoiceSearch()
+            }
+            override fun onResults(results: android.os.Bundle?) {
+                listening = false
+                text(results)?.let { query = it; saveTerm(it) }
+            }
+            override fun onPartialResults(partialResults: android.os.Bundle?) { text(partialResults)?.let { query = it } }
+            override fun onEvent(eventType: Int, params: android.os.Bundle?) {}
+        })
+        val intent = android.content.Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+            .putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL, android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            .putExtra(android.speech.RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            .putExtra(android.speech.RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
+        runCatching { r.cancel(); r.startListening(intent); listening = true }.onFailure { listening = false; systemVoiceSearch() }
+    }
+    listenRef[0] = { listen() }
+    fun toggleVoice() {
+        if (listening) { runCatching { recognizer?.stopListening() }; listening = false } else listen()
+    }
+    // TiviMate: opening Search starts listening straight away (Other › Search › "Prefer voice search").
+    LaunchedEffect(Unit) {
+        if (q.isEmpty() && settings.bool("search.voice")) { delay(250); listen() }
+    }
+
+    // ---- Results (searched off the main thread, shortly after typing / speaking stops)
     val movies by app.vod.movies.collectAsState()
     val shows by app.vod.series.collectAsState()
     LaunchedEffect(Unit) { runCatching { if (movies.isEmpty() && shows.isEmpty()) app.vod.loadCache() } }
+    val chResults by produceState(emptyList<Channel>(), q, channels, favorites, settings) {
+        if (q.length < 2) { value = emptyList(); return@produceState }
+        delay(200)
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            val found = channels.filter { it.name.contains(q, ignoreCase = true) }.distinctBy { it.id }
+                .sortedBy { if (it.name.startsWith(q, ignoreCase = true)) 0 else 1 }
+            // Other › Search › "Show favorite channels first"
+            (if (settings.bool("search.fav_first")) { val fav = favorites.toSet(); found.sortedBy { if (it.id in fav) 0 else 1 } } else found).take(60)
+        }
+    }
     val vodResults by produceState(emptyList<com.novatv.app.playlist.VodItem>() to emptyList<com.novatv.app.playlist.VodItem>(), q, movies, shows) {
         if (q.length < 2) { value = emptyList<com.novatv.app.playlist.VodItem>() to emptyList(); return@produceState }
         delay(250)
@@ -1363,116 +1449,316 @@ fun SearchScreen(
             find(movies) to find(shows)
         }
     }
-    val progResults by produceState(emptyList<Pair<Channel, Program>>(), q, channels, epg) {
+    // Programs, grouped by channel (channels on the left, their programs in the middle).
+    val progResults by produceState(emptyList<Pair<Channel, List<Program>>>(), q, channels, epg, settings) {
         if (q.length < 2 || settings.str("general.search_scope") == "channels") { value = emptyList(); return@produceState }
         delay(300)
         value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
             val t = System.currentTimeMillis()
             val pastAll = settings.bool("search.past_no_catchup")
-            val out = ArrayList<Pair<Channel, Program>>()
+            val out = ArrayList<Pair<Channel, List<Program>>>()
+            var total = 0
+            val seen = HashSet<String>()
             for (c in channels) {
+                if (!seen.add(c.id)) continue
                 // Past programs: those you can watch through catch-up, or all ("Show past programs without catch-up").
                 val pastFrom = if (c.catchupDays > 0) t - c.catchupDays * 86_400_000L else if (pastAll) 0L else t
-                for (p in epg.programsFor(c)) {
-                    if (p.end > pastFrom && p.title.contains(q, ignoreCase = true)) out += c to p
-                    if (out.size >= 80) break
-                }
-                if (out.size >= 80) break
+                val ps = epg.programsFor(c).filter { it.end > pastFrom && it.title.contains(q, ignoreCase = true) }.take(30)
+                if (ps.isNotEmpty()) { out += c to ps; total += ps.size }
+                if (out.size >= 40 || total >= 300) break
             }
-            out.sortedBy { if (it.second.end > t) 0 else 1 }
+            out
         }
     }
-    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(32.dp)) {
-        // TiviMate's search: round microphone button, the search box, and the history as chips below.
-        val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
-        val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
-            RoundMicButton { startVoice() }
-            Spacer(Modifier.width(20.dp))
-            OutlinedTextField(value = query, onValueChange = { query = it }, singleLine = true,
-                placeholder = { Text("Speak or type to search") }, modifier = Modifier.width(620.dp).focusRequester(fr),
-                shape = RoundedCornerShape(6.dp),
-                // The keyboard's Search / Enter key closes the keyboard and moves down onto the results.
-                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search),
-                keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = {
-                    keyboard?.hide(); saveTerm(q)
-                    focusManager.moveFocus(androidx.compose.ui.focus.FocusDirection.Down)
-                }, onDone = { keyboard?.hide(); focusManager.moveFocus(androidx.compose.ui.focus.FocusDirection.Down) }))
+    var searching by remember { mutableStateOf(false) }
+    LaunchedEffect(q) { searching = q.length >= 2; delay(1500); searching = false }
+
+    // Where the remote was on the results (restored when coming back from a movie / show / channel).
+    fun markSpot(section: String, index: Int) { app.searchFocus = "$section:$index" }
+    val restore = remember { app.searchFocus.also { app.searchFocus = null } }
+    val restoreFocus = remember { FocusRequester() }
+    fun restoreMod(section: String, index: Int): Modifier =
+        if (restore == "$section:$index") Modifier.focusRequester(restoreFocus) else Modifier
+
+    val sections = buildList {
+        if (vodResults.first.isNotEmpty()) add("Movies")
+        if (vodResults.second.isNotEmpty()) add("Shows")
+        if (chResults.isNotEmpty()) add("Channels")
+        if (progResults.isNotEmpty()) add("Programs")
+    }
+    val outer = rememberLazyListState()
+    fun showSection(name: String) {
+        val i = sections.indexOf(name)
+        if (i >= 0) scope.launch { runCatching { outer.animateScrollToItem(i) } }
+    }
+    val dim = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.75f)
+
+    Row(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(start = 24.dp, top = 22.dp, end = 24.dp)) {
+        // Left: the round microphone, and under it the names of the rows that have scrolled away (TiviMate).
+        Column(Modifier.width(96.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            RoundMicButton(listening, Modifier.focusRequester(micFocus)) { toggleVoice() }
+            Spacer(Modifier.height(10.dp))
+            val passed = sections.take(outer.firstVisibleItemIndex.coerceAtMost(sections.size))
+            passed.forEach { name ->
+                Text(name, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = dim,
+                    modifier = Modifier.fillMaxWidth().padding(start = 4.dp, top = 6.dp))
+            }
         }
-        Spacer(Modifier.height(12.dp))
-        LazyColumn {
-            // Other › Search › "Show search history"
-            if (q.isEmpty() && settings.bool("search.history") && history.isNotEmpty()) {
-                item {
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.width(700.dp).padding(start = 76.dp, top = 12.dp, bottom = 6.dp)) {
-                        Text("Search history", fontSize = 13.sp, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.75f), modifier = Modifier.weight(1f))
-                        // Clear the history (trash can, like TiviMate)
+        Column(Modifier.weight(1f).fillMaxHeight()) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // The search box: a light rounded bar. OK types (keyboard); it never pops the keyboard up by itself.
+                var boxFocused by remember { mutableStateOf(false) }
+                Box(
+                    Modifier.weight(1f).height(50.dp).focusRequester(boxFocus)
+                        .onFocusChanged { boxFocused = it.hasFocus }
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(Color.White.copy(alpha = if (boxFocused || editing) 0.92f else 0.72f))
+                        .then(if (!editing) Modifier.clickable {
+                            editing = true
+                            scope.launch { delay(30); runCatching { fieldFocus.requestFocus() }; keyboard?.show() }
+                        } else Modifier)
+                        .padding(horizontal = 18.dp),
+                    contentAlignment = Alignment.CenterStart,
+                ) {
+                    androidx.compose.foundation.text.BasicTextField(
+                        value = query, onValueChange = { query = it }, singleLine = true,
+                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 17.sp, color = Color(0xFF2A2C31)),
+                        cursorBrush = androidx.compose.ui.graphics.SolidColor(Color(0xFF2A2C31)),
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search),
+                        keyboardActions = androidx.compose.foundation.text.KeyboardActions(
+                            onSearch = { finishTyping() }, onDone = { finishTyping() }),
+                        modifier = Modifier.fillMaxWidth().focusRequester(fieldFocus)
+                            .focusProperties { canFocus = editing }
+                            .onFocusChanged { if (!it.isFocused && editing) editing = false },
+                        decorationBox = { inner ->
+                            if (query.isEmpty()) Text(if (listening) "Listening…" else "Speak or type to search",
+                                fontSize = 17.sp, color = Color(0xFF2A2C31).copy(alpha = 0.55f))
+                            inner()
+                        },
+                    )
+                }
+                Spacer(Modifier.width(28.dp))
+                // Search settings (gear), top right like TiviMate.
+                var gearFocused by remember { mutableStateOf(false) }
+                Box(Modifier.size(40.dp).onFocusChanged { gearFocused = it.isFocused }.clip(RoundedCornerShape(50))
+                    .background(if (gearFocused) Color.White else Color.Transparent).clickable { onOpenSettings() },
+                    contentAlignment = Alignment.Center) {
+                    androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Filled.Settings, "Search settings",
+                        tint = if (gearFocused) Color(0xFF16181C) else MaterialTheme.colorScheme.onBackground, modifier = Modifier.size(24.dp))
+                }
+                Spacer(Modifier.width(8.dp))
+            }
+            Spacer(Modifier.height(14.dp))
+            when {
+                // Nothing typed yet: the search history as chips in two columns, trash can to clear it.
+                q.isEmpty() -> if (settings.bool("search.history") && history.isNotEmpty()) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.width(640.dp).padding(bottom = 6.dp)) {
+                        Text("Search history", fontSize = 13.sp, color = dim, modifier = Modifier.weight(1f))
                         SearchChip("🗑") { scope.launch { app.settings.setList(DataKeys.SEARCH_HISTORY, emptyList()) } }
                     }
-                }
-                items(history.chunked(2).size) { i ->
-                    val pair = history.chunked(2)[i]
-                    Row(Modifier.padding(start = 76.dp)) {
-                        pair.forEach { h -> Box(Modifier.width(300.dp)) { SearchChip(h) { query = h } } }
+                    LazyColumn {
+                        items(history.chunked(2).size) { i ->
+                            Row {
+                                history.chunked(2)[i].forEach { h -> Box(Modifier.width(320.dp)) { SearchChip(h) { query = h; saveTerm(h) } } }
+                            }
+                        }
                     }
                 }
-            }
-            if (q.length >= 2 && chResults.isEmpty() && progResults.isEmpty() && vodResults.first.isEmpty() && vodResults.second.isEmpty()) {
-                item { Text("Nothing found for \"$q\"", fontSize = 15.sp, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
-                    modifier = Modifier.padding(16.dp)) }
-            }
-            if (chResults.isNotEmpty()) item { SearchHeader("Live channels") }
-            itemsIndexed(chResults) { _, c ->
-                TvRow(onClick = { saveTerm(q); onPlay(listOf(c), c) }) {
-                    ChannelLogo(settings, c, 40.dp)
-                    Spacer(Modifier.width(12.dp))
-                    RowTitle(c.name, c.group)
+                q.length < 2 -> Unit
+                sections.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text(if (searching) "Searching…" else "Nothing found", fontSize = 16.sp, fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onBackground)
                 }
-            }
-            if (vodResults.first.isNotEmpty()) item { SearchHeader("Movies") }
-            itemsIndexed(vodResults.first) { _, m ->
-                TvRow(onClick = { saveTerm(q); onOpenVod(m, true) }) {
-                    RowTitle(m.name, listOfNotNull(m.year, m.category).joinToString(" · "))
-                }
-            }
-            if (vodResults.second.isNotEmpty()) item { SearchHeader("TV shows") }
-            itemsIndexed(vodResults.second) { _, sh ->
-                TvRow(onClick = { saveTerm(q); onOpenVod(sh, false) }) {
-                    RowTitle(sh.name, listOfNotNull(sh.year, sh.category).joinToString(" · "))
-                }
-            }
-            if (progResults.isNotEmpty()) item { SearchHeader("TV programs") }
-            itemsIndexed(progResults) { _, (c, p) ->
-                val now = System.currentTimeMillis()
-                val past = p.end <= now
-                TvRow(onClick = {
-                    saveTerm(q)
-                    val url = if (past) com.novatv.app.premium.Catchup.url(c, p.start, p.end) else null
-                    if (url != null) playUrl("${c.name} · ${p.title}", url) else if (!past) onPlay(listOf(c), c)
-                }) {
-                    ChannelLogo(settings, c, 40.dp)
-                    Spacer(Modifier.width(12.dp))
-                    RowTitle(p.title, "${c.name} · ${dateTimeText(p.start, settings, context)}" + if (past && c.catchupDays > 0) "  ↺" else "",
-                        dim = past && c.catchupDays <= 0)
+                else -> LazyColumn(state = outer, modifier = Modifier.fillMaxSize()) {
+                    sections.forEach { name ->
+                        item(key = name) {
+                            Column(Modifier.fillMaxWidth().padding(bottom = 18.dp)) {
+                                Text(name, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onBackground,
+                                    modifier = Modifier.padding(start = 4.dp, bottom = 8.dp))
+                                when (name) {
+                                    "Movies", "Shows" -> {
+                                        val list = if (name == "Movies") vodResults.first else vodResults.second
+                                        val start = restore?.takeIf { it.startsWith("$name:") }?.substringAfter(':')?.toIntOrNull() ?: 0
+                                        val rowState = rememberLazyListState(initialFirstVisibleItemIndex = (start - 2).coerceAtLeast(0))
+                                        LazyRow(state = rowState, horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp)) {
+                                            itemsIndexed(list, key = { i, it -> "$i:${it.id}" }) { i, item ->
+                                                Box(Modifier.width(104.dp).then(restoreMod(name, i))) {
+                                                    PosterCard(item, onFocused = { showSection(name) }) {
+                                                        markSpot(name, i); saveTerm(q); onOpenVod(item, name == "Movies")
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    "Channels" -> {
+                                        val start = restore?.takeIf { it.startsWith("Channels:") }?.substringAfter(':')?.toIntOrNull() ?: 0
+                                        val rowState = rememberLazyListState(initialFirstVisibleItemIndex = (start - 2).coerceAtLeast(0))
+                                        LazyRow(state = rowState, horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp)) {
+                                            itemsIndexed(chResults, key = { i, it -> "$i:${it.id}" }) { i, c ->
+                                                val now = remember(c.id, epg) { epg.at(c, System.currentTimeMillis()) }
+                                                SearchChannelTile(settings, c, now?.title ?: "No information",
+                                                    modifier = restoreMod("Channels", i), onFocused = { showSection("Channels") }) {
+                                                    markSpot("Channels", i); saveTerm(q); onPlay(chResults, c)
+                                                }
+                                            }
+                                        }
+                                    }
+                                    else -> SearchPrograms(settings, progResults, restore, restoreMod = { i -> restoreMod("Programs", i) },
+                                        onFocused = { showSection("Programs") }) { i, c, p ->
+                                        markSpot("Programs", i); saveTerm(q)
+                                        val past = p.end <= System.currentTimeMillis()
+                                        val url = if (past) com.novatv.app.premium.Catchup.url(c, p.start, p.end) else null
+                                        if (url != null) playUrl("${c.name} · ${p.title}", url)
+                                        else if (!past) onPlay(listOf(c), c)
+                                        else android.widget.Toast.makeText(context, "This program has already aired", android.widget.Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
     }
-    AutoFocus(fr)
+    // Back while listening or typing stops that first; otherwise Search closes as usual.
+    BackHandler(enabled = listening || editing) {
+        if (listening) { runCatching { recognizer?.cancel() }; listening = false }
+        if (editing) { keyboard?.hide(); editing = false; scope.launch { delay(40); runCatching { boxFocus.requestFocus() } } }
+    }
+    // First focus: back on the result you opened, otherwise the microphone (TiviMate).
+    var restoredDone by remember { mutableStateOf(false) }
+    LaunchedEffect(sections) {
+        if (restore == null || restoredDone) return@LaunchedEffect
+        val i = sections.indexOf(restore.substringBefore(':'))
+        if (i < 0) return@LaunchedEffect
+        restoredDone = true
+        runCatching { outer.scrollToItem(i) }
+        repeat(20) {
+            delay(50)
+            if (runCatching { restoreFocus.requestFocus() }.isSuccess) return@LaunchedEffect
+        }
+    }
+    AutoFocus(micFocus)
 }
 
-/** Round white microphone button (TiviMate search). */
+/** A live channel in the search results: logo, name and what's on now. */
 @Composable
-private fun RoundMicButton(onClick: () -> Unit) {
+private fun SearchChannelTile(settings: AppSettings, c: Channel, now: String, modifier: Modifier = Modifier,
+                              onFocused: () -> Unit = {}, onClick: () -> Unit) {
     var f by remember { mutableStateOf(false) }
+    Column(
+        modifier.width(118.dp).height(92.dp)
+            .onFocusChanged { f = it.isFocused; if (it.isFocused) onFocused() }
+            .clip(RoundedCornerShape(6.dp))
+            .background(if (f) Color.White else Color.White.copy(alpha = 0.10f))
+            .clickable { onClick() }
+            .padding(6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        ChannelLogo(settings, c, 52.dp)
+        Text(c.name, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            color = if (f) Color(0xFF16181C) else MaterialTheme.colorScheme.onBackground)
+        Text(now, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            color = (if (f) Color(0xFF16181C) else MaterialTheme.colorScheme.onBackground).copy(alpha = 0.7f))
+    }
+}
+
+/**
+ * Programs in the search results, TiviMate's layout: channels down the left, the highlighted channel's
+ * matching programs in the middle, and the highlighted program's details on the right.
+ */
+@Composable
+private fun SearchPrograms(
+    settings: AppSettings,
+    results: List<Pair<Channel, List<Program>>>,
+    restore: String?,
+    restoreMod: (Int) -> Modifier,
+    onFocused: () -> Unit,
+    onOpen: (Int, Channel, Program) -> Unit,
+) {
+    val context = LocalContext.current
+    val startCh = restore?.takeIf { it.startsWith("Programs:") }?.substringAfter(':')?.toIntOrNull()?.let { it / 1000 } ?: 0
+    var chIndex by remember(results) { mutableIntStateOf(startCh.coerceIn(0, (results.size - 1).coerceAtLeast(0))) }
+    var progIndex by remember(results, chIndex) { mutableIntStateOf(0) }
+    val (ch, progs) = results.getOrNull(chIndex) ?: return
+    val prog = progs.getOrNull(progIndex) ?: progs.firstOrNull()
+    val selected = if (LocalSelectionWhite.current) Color.White else MaterialTheme.colorScheme.primary
+    Row(Modifier.fillMaxWidth().height(330.dp)) {
+        LazyColumn(Modifier.width(118.dp).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp),
+            state = rememberLazyListState(initialFirstVisibleItemIndex = (startCh - 1).coerceAtLeast(0))) {
+            itemsIndexed(results, key = { i, it -> "$i:${it.first.id}" }) { i, (c, _) ->
+                var f by remember { mutableStateOf(false) }
+                Column(
+                    Modifier.fillMaxWidth().height(96.dp)
+                        .onFocusChanged { f = it.isFocused; if (it.isFocused) { chIndex = i; onFocused() } }
+                        .clip(RoundedCornerShape(6.dp))
+                        .then(if (i == chIndex) Modifier.border(2.dp, if (f) selected else Color.White.copy(alpha = 0.6f), RoundedCornerShape(6.dp)) else Modifier)
+                        .clickable { results[i].second.firstOrNull()?.let { onOpen(i * 1000, c, it) } }
+                        .padding(6.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center,
+                ) {
+                    ChannelLogo(settings, c, 60.dp)
+                    Text(c.name, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 3, overflow = TextOverflow.Ellipsis,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center, color = MaterialTheme.colorScheme.onBackground)
+                }
+            }
+        }
+        Spacer(Modifier.width(22.dp))
+        val startProg = restore?.takeIf { it.startsWith("Programs:") }?.substringAfter(':')?.toIntOrNull()
+            ?.takeIf { it / 1000 == chIndex }?.let { it % 1000 } ?: 0
+        LazyColumn(Modifier.weight(1f).fillMaxHeight(),
+            state = rememberLazyListState(initialFirstVisibleItemIndex = (startProg - 2).coerceAtLeast(0))) {
+            itemsIndexed(progs) { j, p ->
+                val now = System.currentTimeMillis()
+                val past = p.end <= now
+                TvRow(
+                    modifier = restoreMod(chIndex * 1000 + j),
+                    onFocused = { progIndex = j; onFocused() },
+                    onClick = { onOpen(chIndex * 1000 + j, ch, p) },
+                ) {
+                    RowTitle(p.title, dateTimeText(p.start, settings, context) + " — " + timeText(p.end, settings, context) +
+                        if (past && ch.catchupDays > 0) "  ↺" else "", dim = past && ch.catchupDays <= 0)
+                }
+            }
+        }
+        Spacer(Modifier.width(22.dp))
+        if (prog != null) {
+            Column(
+                Modifier.width(300.dp).clip(RoundedCornerShape(6.dp)).background(Color.White.copy(alpha = 0.10f)).padding(14.dp)
+            ) {
+                Text(prog.title, fontSize = 17.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(dateTimeText(prog.start, settings, context) + " — " + timeText(prog.end, settings, context),
+                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.8f), modifier = Modifier.padding(top = 2.dp, bottom = 8.dp))
+                if (prog.desc.isNotBlank()) Text(prog.desc, fontSize = 13.sp, color = MaterialTheme.colorScheme.onBackground,
+                    maxLines = 9, overflow = TextOverflow.Ellipsis)
+            }
+        }
+    }
+}
+
+/** Round microphone button (TiviMate search): white, and in the accent color while it's listening. */
+@Composable
+private fun RoundMicButton(listening: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    var f by remember { mutableStateOf(false) }
+    var scale by remember { mutableStateOf(1f) }
+    LaunchedEffect(listening) {
+        // Gentle pulse while it's listening.
+        if (!listening) { scale = 1f; return@LaunchedEffect }
+        androidx.compose.animation.core.animate(1f, 1.12f, animationSpec = androidx.compose.animation.core.infiniteRepeatable(
+            androidx.compose.animation.core.tween(600), androidx.compose.animation.core.RepeatMode.Reverse)) { v, _ -> scale = v }
+    }
     Box(
-        Modifier.size(56.dp).onFocusChanged { f = it.isFocused }.clip(RoundedCornerShape(50))
-            .background(if (f) Color.White else Color.White.copy(alpha = 0.85f))
+        modifier.size(56.dp).graphicsLayer { scaleX = scale; scaleY = scale }
+            .onFocusChanged { f = it.isFocused }.clip(RoundedCornerShape(50))
+            .background(when { listening -> MaterialTheme.colorScheme.primary; f -> Color.White; else -> Color.White.copy(alpha = 0.8f) })
             .clickable { onClick() },
         contentAlignment = Alignment.Center,
     ) {
         androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Filled.Mic, "Voice search",
-            tint = Color(0xFF3A3E47), modifier = Modifier.size(26.dp))
+            tint = if (listening) Color.White else Color(0xFF3A3E47), modifier = Modifier.size(26.dp))
     }
 }
 
@@ -1486,12 +1772,6 @@ private fun SearchChip(text: String, onClick: () -> Unit) {
             .background(if (f) Color.White else Color.White.copy(alpha = 0.12f))
             .clickable { onClick() }
             .padding(horizontal = 14.dp, vertical = 6.dp))
-}
-
-@Composable
-private fun SearchHeader(title: String) {
-    Text(title, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.padding(start = 12.dp, top = 14.dp, bottom = 4.dp))
 }
 
 /** Text that doesn't fit slides slowly sideways after a short pause, then repeats (like TiviMate). */
