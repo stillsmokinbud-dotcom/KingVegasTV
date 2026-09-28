@@ -96,9 +96,16 @@ fun VodBrowseScreen(
     val myIds by vod.myList.collectAsState()
     val historyIds by vod.history.collectAsState()
     var error by remember { mutableStateOf<String?>(null) }
-    var category by remember { mutableStateOf(startCategory ?: ALL) }
+    // Coming back from a movie / show: the same category and the poster you opened (TiviMate).
+    val saved = remember { context.app.vodSpot[kind] }
+    var category by remember { mutableStateOf(startCategory ?: saved?.first ?: ALL) }
     var focusedItem by remember { mutableStateOf<VodItem?>(null) }
     val listFocus = remember { FocusRequester() }
+    val posterFocus = remember { FocusRequester() }
+    /** The poster the remote should go to (restored one, or the first after OK on a category). */
+    var posterTarget by remember { mutableIntStateOf(if (saved != null && startCategory == null) saved.second else -1) }
+    var goToPosters by remember { mutableIntStateOf(if (posterTarget >= 0) 1 else 0) }
+    var inPosters by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         if (all.isEmpty()) vod.loadCache()
@@ -131,8 +138,40 @@ fun VodBrowseScreen(
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val catState = androidx.compose.foundation.lazy.rememberLazyListState()
     val gridState = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
-    // A new category starts at its first poster.
-    LaunchedEffect(category) { runCatching { gridState.scrollToItem(0) } }
+    val catKeys = remember(categories) { listOf(VOD_MY_LIST, HISTORY, ALL, RECENT) + categories }
+    // A new category starts at its first poster (not when coming back to the one you were in).
+    var firstCategory by remember { mutableStateOf(true) }
+    LaunchedEffect(category) {
+        if (firstCategory) { firstCategory = false; return@LaunchedEffect }
+        runCatching { gridState.scrollToItem(0) }
+    }
+    // Keep the chosen category in view in the list (also when coming back).
+    LaunchedEffect(catKeys) {
+        val i = catKeys.indexOf(category)
+        if (i >= 0) runCatching { catState.scrollToItem((i - 4).coerceAtLeast(0)) }
+    }
+    // OK on a category (or coming back from a title): go onto the posters.
+    LaunchedEffect(goToPosters, shown) {
+        if (goToPosters == 0 || shown.isEmpty()) return@LaunchedEffect
+        val target = posterTarget.coerceIn(0, shown.lastIndex)
+        posterTarget = target
+        runCatching { gridState.scrollToItem(target / 7 * 7) }
+        repeat(20) {
+            delay(40)
+            if (inPosters) { goToPosters = 0; return@LaunchedEffect }
+            runCatching { posterFocus.requestFocus() }
+        }
+        goToPosters = 0
+    }
+    // TiviMate: Back while browsing the posters goes back to the category you picked (not out of Movies).
+    BackHandler(enabled = inPosters) {
+        val i = catKeys.indexOf(category)
+        scope.launch {
+            if (i >= 0) runCatching { catState.scrollToItem((i - 4).coerceAtLeast(0)) }
+            delay(30)
+            runCatching { listFocus.requestFocus() }
+        }
+    }
 
     Row(Modifier.fillMaxSize().background(colors.background)) {
         VodRail(current = if (kind == VodKind.MOVIES) MenuDest.MOVIES else MenuDest.SHOWS, onNavigate = { d ->
@@ -154,7 +193,8 @@ fun VodBrowseScreen(
                             category = key
                             scope.launch { runCatching { catState.animateScrollToItem((i - 4).coerceAtLeast(0)) } }
                         },
-                        onClick = { category = key },
+                        // OK: open this category and start browsing its posters.
+                        onClick = { category = key; posterTarget = 0; goToPosters++ },
                     ) {
                         Text(label, fontSize = 15.sp, color = rowContentColor(), maxLines = 1, overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f))
@@ -193,13 +233,16 @@ fun VodBrowseScreen(
                             verticalArrangement = Arrangement.spacedBy(12.dp),
                             horizontalArrangement = Arrangement.spacedBy(10.dp),
                             contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 16.dp, end = 16.dp, bottom = 300.dp, top = 2.dp),
-                            modifier = Modifier.fillMaxSize(),
+                            modifier = Modifier.fillMaxSize().onFocusChanged { inPosters = it.hasFocus },
                         ) {
                             itemsIndexed(shown, key = { i, it -> "$i:${it.id}" }) { i, item ->
-                                PosterCard(item, onFocused = {
-                                    focusedItem = item; focusedIndex = i
-                                    scope.launch { runCatching { gridState.animateScrollToItem(i / 7 * 7) } }
-                                }) { onOpen(item) }
+                                PosterCard(item,
+                                    modifier = if (i == posterTarget) Modifier.focusRequester(posterFocus) else Modifier,
+                                    onFocused = {
+                                        focusedItem = item; focusedIndex = i
+                                        context.app.vodSpot[kind] = category to i
+                                        scope.launch { runCatching { gridState.animateScrollToItem(i / 7 * 7) } }
+                                    }) { context.app.vodSpot[kind] = category to i; onOpen(item) }
                             }
                         }
                     }
@@ -207,7 +250,7 @@ fun VodBrowseScreen(
             }
         }
     }
-    AutoFocus(listFocus)
+    if (posterTarget < 0) AutoFocus(listFocus)
 }
 
 /** Narrow icon rail on the far left (TiviMate): TV, search, movies, shows, recordings, my list, settings. */
@@ -342,11 +385,11 @@ private fun CenterText(text: String) {
 }
 
 @Composable
-internal fun PosterCard(item: VodItem, onFocused: () -> Unit = {}, onClick: () -> Unit) {
+internal fun PosterCard(item: VodItem, modifier: Modifier = Modifier, onFocused: () -> Unit = {}, onClick: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
     val accent = if (LocalSelectionWhite.current) Color.White else MaterialTheme.colorScheme.primary
     Column(
-        Modifier
+        modifier
             .onFocusChanged { focused = it.isFocused; if (it.isFocused) onFocused() }
             .onPreviewKeyEvent { e ->
                 val ok = e.key == Key.DirectionCenter || e.key == Key.Enter || e.key == Key.NumPadEnter
