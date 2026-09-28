@@ -39,7 +39,15 @@ class App : Application() {
     /** True while the full-screen player is open (for picture-in-picture on Home). */
     @Volatile var playerActive: Boolean = false
     /** Channel last watched in the player (the guide marks it with ▶). */
+    /** The channel playing (full screen or in the guide preview). Saved, so the app starts on it next time. */
     @Volatile var lastPlayedId: String? = null
+        set(v) {
+            val changed = field != v
+            field = v
+            if (changed && v != null && ::settings.isInitialized) appScope.launch {
+                runCatching { settings.set(com.novatv.app.settings.DataKeys.LAST_CHANNEL, v) }
+            }
+        }
     @Volatile var guideHintsShown: Boolean = false
     /** Channel groups the guide showed last (shown instantly when the guide opens again). */
     @Volatile var guideGroups: List<com.novatv.app.playlist.ChannelGroup> = emptyList()
