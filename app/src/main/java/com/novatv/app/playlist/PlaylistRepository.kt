@@ -283,7 +283,8 @@ class PlaylistRepository(
         val byId = channels.associateBy { it.id }
         val result = mutableListOf<ChannelGroup>()
         val favChannels = favorites.mapNotNull { byId[it] }
-        if (s.bool("groups.show_favorites") && s.premium) result += ChannelGroup("Favorites", favChannels)
+        // The "Favorites" category is always in the list (Settings › Groups › Show "Favorites" category).
+        if (s.bool("groups.show_favorites")) result += ChannelGroup("Favorites", favChannels)
         if (s.bool("general.recent_group")) {
             val rec = recent.mapNotNull { byId[it] }.take(s.int("general.recent_count"))
             if (rec.isNotEmpty()) result += ChannelGroup("Recently watched", rec)
