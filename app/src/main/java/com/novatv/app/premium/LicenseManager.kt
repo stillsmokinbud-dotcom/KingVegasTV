@@ -163,6 +163,32 @@ class LicenseManager(
         clearLocal()
     }
 
+    /**
+     * Tells the server which playlist logins (IPTV lines) this device uses, so the reseller/admin sees them
+     * under the customer's email in the admin panel. Only while signed in; replaces what this device sent before.
+     */
+    suspend fun reportLines(
+        list: List<com.novatv.app.playlist.Playlist>,
+        streamHosts: Map<String, List<String>> = emptyMap(),
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        val token = settings.current().raw[KEY_TOKEN]?.takeIf { it.isNotBlank() } ?: return@withContext Result.failure(IOException("Not signed in"))
+        runCatching {
+            fun p(v: String) = kotlinx.serialization.json.JsonPrimitive(v)
+            val lines = kotlinx.serialization.json.JsonArray(list.map { pl ->
+                val file = pl.type == com.novatv.app.playlist.PlaylistType.M3U_FILE
+                JsonObject(mapOf(
+                    "name" to p(pl.name), "type" to p(pl.type.label),
+                    "server" to p(if (file) "" else pl.url), "username" to p(pl.username),
+                    "password" to p(pl.password), "mac" to p(pl.mac),
+                    "streams" to kotlinx.serialization.json.JsonArray(streamHosts[pl.id].orEmpty().map { p(it) }),
+                ))
+            })
+            val body = json.encodeToString(JsonObject.serializer(), JsonObject(mapOf("lines" to lines)))
+            call(Request.Builder().url("${serverUrl()}/api/lines").header("Authorization", "Bearer $token").post(body.toRequestBody(JSON_TYPE)))
+            Unit
+        }
+    }
+
     suspend fun plans(): Result<Plans> = withContext(Dispatchers.IO) {
         runCatching {
             val obj = call(Request.Builder().url("${serverUrl()}/api/plans").get())
