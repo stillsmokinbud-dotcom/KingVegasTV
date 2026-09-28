@@ -391,16 +391,6 @@ fun GuideScreen(
                     android.widget.Toast.makeText(context, "Press Back again to exit", android.widget.Toast.LENGTH_SHORT).show()
                 }
             }
-            // Browsed away from the channel you're watching: Back goes straight back to it (TiviMate).
-            playingChannel != null && channel?.id != playingChannel.id && run {
-                val gi = groups.indexOfFirst { g -> g.channels.any { it.id == playingChannel.id } }
-                    .let { if (group?.channels?.any { it.id == playingChannel.id } == true) groupIndex else it }
-                if (gi < 0) false else {
-                    groupIndex = gi
-                    row = groups[gi].channels.indexOfFirst { it.id == playingChannel.id }.coerceAtLeast(0)
-                    resetToNow(); true
-                }
-            } -> Unit
             settings.bool("guide.back_to_current") && scrolled -> resetToNow()
             // TiviMate: Back from the guide returns to the channel playing full screen.
             // Back opens the side panel (groups); hold Back for full screen.
@@ -1241,10 +1231,14 @@ private fun SideDrawer(
                 ) {
                     // TiviMate: compact rows and smaller words, level with the channel rows; eight fit on screen.
                     itemsIndexed(groups) { i, g ->
+                      // The row's modifiers keep the same shape whichever group is chosen: adding or removing a
+                      // modifier on the row that has the remote made it drop the remote (the "invisible wall").
+                      val ownFocus = remember { FocusRequester() }
+                      val ownFocus2 = remember { FocusRequester() }
                       androidx.compose.runtime.CompositionLocalProvider(LocalPanelCompact provides true) {
                         TvRow(
-                            modifier = (if (i == groupIndex) Modifier.focusRequester(groupFocus) else Modifier)
-                                .then(if (i == jumpTo) Modifier.focusRequester(jumpFocus) else Modifier),
+                            modifier = Modifier.focusRequester(if (i == groupIndex) groupFocus else ownFocus)
+                                .focusRequester(if (i == jumpTo) jumpFocus else ownFocus2),
                             onFocused = { focusedGroup = i; if (!passive) onHoverGroup(i) },
                             selected = i == groupIndex,
                             onClick = { onGroup(i) },
