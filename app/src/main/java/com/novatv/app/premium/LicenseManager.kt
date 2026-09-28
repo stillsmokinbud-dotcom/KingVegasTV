@@ -35,6 +35,18 @@ data class Account(
     val devices: List<DeviceInfo> = emptyList(),
     val buyUrl: String = "",
     val checkedAt: Long = 0,
+    /** TV service logins bought on the website; the app adds them as playlists by itself. */
+    val iptv: List<IptvLine> = emptyList(),
+)
+
+@Serializable
+data class IptvLine(
+    val name: String = "",
+    val server: String = "",
+    val username: String = "",
+    val password: String = "",
+    val expiresAt: Long? = null,
+    val trial: Boolean = false,
 )
 
 @Serializable
