@@ -11,6 +11,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.flowOn
 
 class App : Application() {
 
@@ -127,6 +131,27 @@ class App : Application() {
                 settings.set("data.info_bottom_v1", "done")
             }
         }
+        // Signed in to a KINGVEGAS account: send this device's playlist logins, and the domains its channels
+        // stream from, to the server (the admin panel shows them under the customer).
+        appScope.launch {
+            val streamHosts = playlists.channels.map { chans ->
+                chans.groupBy { it.playlistId }.mapValues { (_, list) ->
+                    list.asSequence().mapNotNull { c -> runCatching { java.net.URI(c.url.trim()).host }.getOrNull()?.lowercase() }
+                        .groupingBy { it }.eachCount().entries.sortedByDescending { it.value }.take(5).map { it.key }
+                }
+            }.flowOn(Dispatchers.Default).distinctUntilChanged()
+            kotlinx.coroutines.flow.combine(
+                playlists.playlists.map { list -> list.map { listOf(it.id, it.name, it.type.name, it.url, it.username, it.password, it.mac) } to list },
+                streamHosts,
+                license.account.map { it?.email },
+            ) { (key, list), hosts, email -> Report(key, hosts, email, list) }
+                .distinctUntilChanged { a, b -> a.key == b.key && a.hosts == b.hosts && a.email == b.email }
+                .collectLatest { r ->
+                    if (r.email == null) return@collectLatest
+                    kotlinx.coroutines.delay(3000)
+                    license.reportLines(r.list, r.hosts)
+                }
+        }
         // Settings → TV guide → "Update when a playlist is updated"
         playlists.onChannelsUpdated = {
             if (settings.current().bool("epg.update_on_playlist_change")) appScope.launch { epg.update(skipIfNewerThanMs = 10 * 60_000L) }
@@ -134,5 +159,10 @@ class App : Application() {
         }
     }
 }
+
+private data class Report(
+    val key: List<List<String>>, val hosts: Map<String, List<String>>, val email: String?,
+    val list: List<com.novatv.app.playlist.Playlist>,
+)
 
 val Context.app: App get() = applicationContext as App
