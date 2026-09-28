@@ -212,6 +212,7 @@ fun GuideScreen(
     // full menu with labels. Kept as its own state (not "who has the remote"), so it never opens
     // both at once and never shrinks and re-opens when you come back from Settings.
     var railOpen by remember { mutableStateOf(menuReturn != null) }
+    var hoverGroup by remember { mutableIntStateOf(-1) }
     var railFocusRequest by remember { mutableIntStateOf(0) } // bump to move the remote onto the side menu
     var backLongFired by remember { mutableStateOf(false) }
     var backDownSeen by remember { mutableStateOf(false) }
@@ -590,6 +591,16 @@ fun GuideScreen(
             playlists?.isEmpty() == true -> Welcome(onAddPlaylist, onSettings = { onNavigate(MenuDest.SETTINGS) }, background = background)
             // Channels are there but the groups are still being sorted: show nothing for that instant.
             (group == null || chs.isEmpty()) && channels.isNotEmpty() && (groups.isEmpty() || !groupChosen) -> Unit
+            // Moving over an empty group (e.g. Favorites) with the groups open: the preview keeps playing
+            // and only the grid says it's empty — nothing jumps or goes black (TiviMate).
+            (group == null || chs.isEmpty()) && drawerOpen && playingChannel != null -> Column(Modifier.fillMaxSize()) {
+                val pc = playingChannel!!
+                TopInfo(settings, pc, pc, true, epg.at(pc, now), favorites, epg, now, epgStatus ?: playlistStatus)
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+                    Text("No channels in this group", fontSize = 15.sp, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
+                        modifier = Modifier.padding(top = 40.dp))
+                }
+            }
             group == null || chs.isEmpty() -> CenterMessage(
                 playlistStatus ?: "No channels here yet",
                 "Press Left for the menu",
@@ -625,15 +636,9 @@ fun GuideScreen(
         ) {
             SideDrawer(
                 groups = groups, groupIndex = groupIndex,
-                // TiviMate: just moving over a group shows it in the guide straight away.
-                onHoverGroup = { i ->
-                    if (i != groupIndex) {
-                        groupIndex = i
-                        val at = groups.getOrNull(i)?.channels?.indexOfFirst { it.id == playingId } ?: -1
-                        row = if (at >= 0) at else 0
-                        resetToNow()
-                    }
-                },
+                // TiviMate: just moving over a group shows it in the guide (a moment after the remote stops
+                // on it, so running down the list stays smooth instead of redrawing the guide for every group).
+                onHoverGroup = { i -> hoverGroup = i },
                 onGroup = { i ->
                     groupIndex = i; row = 0; resetToNow(); drawerOpen = false
                     groups.getOrNull(i)?.let { g -> scope.launch { app.settings.set(DataKeys.LAST_GROUP, g.name) } }
@@ -684,6 +689,15 @@ fun GuideScreen(
     }
 
     LaunchedEffect(drawerOpen) { if (!drawerOpen) railOpen = false }
+    LaunchedEffect(hoverGroup) {
+        val i = hoverGroup
+        if (i < 0 || i == groupIndex) return@LaunchedEffect
+        delay(140)
+        groupIndex = i
+        val at = groups.getOrNull(i)?.channels?.indexOfFirst { it.id == playingId } ?: -1
+        row = if (at >= 0) at else 0
+        resetToNow()
+    }
 
     LaunchedEffect(numberBuffer) {
         if (numberBuffer.isEmpty()) return@LaunchedEffect
