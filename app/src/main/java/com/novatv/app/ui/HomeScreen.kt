@@ -391,6 +391,16 @@ fun GuideScreen(
                     android.widget.Toast.makeText(context, "Press Back again to exit", android.widget.Toast.LENGTH_SHORT).show()
                 }
             }
+            // Browsed away from the channel you're watching: Back goes straight back to it (TiviMate).
+            playingChannel != null && channel?.id != playingChannel.id && run {
+                val gi = groups.indexOfFirst { g -> g.channels.any { it.id == playingChannel.id } }
+                    .let { if (group?.channels?.any { it.id == playingChannel.id } == true) groupIndex else it }
+                if (gi < 0) false else {
+                    groupIndex = gi
+                    row = groups[gi].channels.indexOfFirst { it.id == playingChannel.id }.coerceAtLeast(0)
+                    resetToNow(); true
+                }
+            } -> Unit
             settings.bool("guide.back_to_current") && scrolled -> resetToNow()
             // TiviMate: Back from the guide returns to the channel playing full screen.
             // Back opens the side panel (groups); hold Back for full screen.
