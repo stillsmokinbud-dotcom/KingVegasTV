@@ -213,6 +213,9 @@ fun GuideScreen(
     // both at once and never shrinks and re-opens when you come back from Settings.
     var railOpen by remember { mutableStateOf(menuReturn != null) }
     var hoverGroup by remember { mutableIntStateOf(-1) }
+    var drawerHasFocus by remember { mutableStateOf(false) }
+    var drawerRefocus by remember { mutableIntStateOf(0) }
+    var drawerOpenCount by remember { mutableIntStateOf(0) }
     var railFocusRequest by remember { mutableIntStateOf(0) } // bump to move the remote onto the side menu
     var backLongFired by remember { mutableStateOf(false) }
     var backDownSeen by remember { mutableStateOf(false) }
@@ -544,7 +547,16 @@ fun GuideScreen(
                     }
                     return@onKeyEvent true
                 }
-                if (drawerOpen) return@onKeyEvent false
+                if (drawerOpen) {
+                    // The groups are open but the remote isn't on them (the list was still sliding in when it
+                    // tried to take the remote): the first press puts it back on the category instead of
+                    // doing nothing (the "invisible wall").
+                    if (!drawerHasFocus && e.type == KeyEventType.KeyDown && (e.key == Key.DirectionUp || e.key == Key.DirectionDown ||
+                            e.key == Key.DirectionLeft || e.key == Key.DirectionRight || e.key == Key.DirectionCenter || e.key == Key.Enter)) {
+                        drawerRefocus++; return@onKeyEvent true
+                    }
+                    return@onKeyEvent false
+                }
                 // Welcome screen: only the two buttons; no side menu (Left/Menu/arrows do nothing here).
                 if (playlists?.isEmpty() == true) return@onKeyEvent e.key != Key.Back
                 val id = guideKeyId(e.key)
@@ -660,6 +672,9 @@ fun GuideScreen(
                 onCloseRail = { railOpen = false },
                 passive = background,
                 railFocusRequest = railFocusRequest,
+                openKey = drawerOpenCount,
+                refocusKey = drawerRefocus,
+                onHasFocus = { drawerHasFocus = it },
             )
         }
 
@@ -688,7 +703,7 @@ fun GuideScreen(
         }
     }
 
-    LaunchedEffect(drawerOpen) { if (!drawerOpen) railOpen = false }
+    LaunchedEffect(drawerOpen) { if (!drawerOpen) railOpen = false else drawerOpenCount++ }
     LaunchedEffect(hoverGroup) {
         val i = hoverGroup
         if (i < 0 || i == groupIndex) return@LaunchedEffect
@@ -1113,6 +1128,11 @@ private fun SideDrawer(
     /** Shown behind Settings: just a picture, never takes the remote. */
     passive: Boolean = false,
     railFocusRequest: Int = 0,
+    /** Changes every time the groups open: the remote is put on the group again. */
+    openKey: Int = 0,
+    /** Bumped when a key arrives while the remote isn't on the drawer: take the remote back. */
+    refocusKey: Int = 0,
+    onHasFocus: (Boolean) -> Unit = {},
     onOpenRail: () -> Unit = {},
     onCloseRail: () -> Unit = {},
     onHoverGroup: (Int) -> Unit = {},
@@ -1138,7 +1158,7 @@ private fun SideDrawer(
     val railBg = colors.surfaceVariant
     val railWidth by androidx.compose.animation.core.animateDpAsState(
         if (railExpanded) RAIL_OPEN else RAIL_CLOSED, androidx.compose.animation.core.tween(280, easing = androidx.compose.animation.core.FastOutSlowInEasing), label = "rail")
-    Row(Modifier.fillMaxHeight()) {
+    Row(Modifier.fillMaxHeight().onFocusChanged { onHasFocus(it.hasFocus) }) {
         // Icon rail; expands to show labels (TiviMate's main menu) when it has focus.
         Column(
             Modifier
@@ -1266,18 +1286,34 @@ private fun SideDrawer(
         runCatching { jumpFocus.requestFocus() }
         jumpTo = -1
     }
-    LaunchedEffect(Unit) {
+    // Make sure the chosen group's row exists (is on screen) before giving it the remote.
+    suspend fun showChosenGroup() {
+        val visible = listState.layoutInfo.visibleItemsInfo.map { it.index }
+        if (groupIndex !in visible) runCatching { listState.scrollToItem((groupIndex - 4).coerceAtLeast(0)) }
+    }
+    LaunchedEffect(openKey) {
         if (passive) return@LaunchedEffect
         delay(30)
         if (focusDest != null && focusDest != MenuDest.GUIDE && runCatching { destFocus.requestFocus() }.isSuccess) return@LaunchedEffect
         if (groups.isNotEmpty() && !focusMenu) {
             // The list may still be sliding in: keep trying until the remote is on the group.
-            repeat(15) {
+            repeat(40) {
                 if (groupsFocused) return@LaunchedEffect
+                showChosenGroup()
                 runCatching { groupFocus.requestFocus() }
-                delay(30)
+                delay(40)
             }
         } else runCatching { menuFocus.requestFocus() }
+    }
+    LaunchedEffect(refocusKey) {
+        if (passive || refocusKey == 0) return@LaunchedEffect
+        if (railExpanded || groups.isEmpty()) { runCatching { menuFocus.requestFocus() }; return@LaunchedEffect }
+        showChosenGroup()
+        repeat(10) {
+            runCatching { groupFocus.requestFocus() }
+            delay(30)
+            if (groupsFocused) return@LaunchedEffect
+        }
     }
 }
 
