@@ -106,6 +106,14 @@ fun VodBrowseScreen(
     var posterTarget by remember { mutableIntStateOf(if (saved != null && startCategory == null) saved.second else -1) }
     var goToPosters by remember { mutableIntStateOf(if (posterTarget >= 0) 1 else 0) }
     var inPosters by remember { mutableStateOf(false) }
+    // Moving over a category shows it a moment after the remote stops there (smooth, no jumping while scrolling).
+    var hoverKey by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(hoverKey) {
+        val k = hoverKey ?: return@LaunchedEffect
+        if (k == category) return@LaunchedEffect
+        delay(160)
+        category = k
+    }
 
     LaunchedEffect(Unit) {
         if (all.isEmpty()) vod.loadCache()
@@ -190,11 +198,11 @@ fun VodBrowseScreen(
                         modifier = if (key == category) Modifier.focusRequester(listFocus) else Modifier,
                         selected = key == category,
                         onFocused = {
-                            category = key
+                            hoverKey = key
                             scope.launch { runCatching { catState.animateScrollToItem((i - 4).coerceAtLeast(0)) } }
                         },
                         // OK: open this category and start browsing its posters.
-                        onClick = { category = key; posterTarget = 0; goToPosters++ },
+                        onClick = { hoverKey = key; category = key; posterTarget = 0; goToPosters++ },
                     ) {
                         Text(label, fontSize = 15.sp, color = rowContentColor(), maxLines = 1, overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f))
