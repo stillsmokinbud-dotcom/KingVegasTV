@@ -1199,9 +1199,9 @@ private fun SideDrawer(
                 }
             }
         } else if (groups.isNotEmpty()) {
-            // TiviMate: the groups sit on the guide's own background, high enough that eight of them show at once.
+            // TiviMate: the groups sit on the guide's own background, level with the channel rows.
             Column(Modifier.width(GROUPS_COL).fillMaxHeight().background(colors.background)
-                .padding(start = 12.dp, end = 12.dp, top = 150.dp, bottom = 12.dp)) {
+                .padding(start = 12.dp, end = 12.dp, top = 256.dp, bottom = 8.dp)) {
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.onFocusChanged { groupsFocused = it.hasFocus }.onPreviewKeyEvent { e ->
@@ -1215,7 +1215,9 @@ private fun SideDrawer(
                         else false
                     },
                 ) {
+                    // TiviMate: compact rows and smaller words, level with the channel rows; eight fit on screen.
                     itemsIndexed(groups) { i, g ->
+                      androidx.compose.runtime.CompositionLocalProvider(LocalPanelCompact provides true) {
                         TvRow(
                             modifier = (if (i == groupIndex) Modifier.focusRequester(groupFocus) else Modifier)
                                 .then(if (i == jumpTo) Modifier.focusRequester(jumpFocus) else Modifier),
@@ -1223,9 +1225,10 @@ private fun SideDrawer(
                             selected = i == groupIndex,
                             onClick = { onGroup(i) },
                         ) {
-                            Text(g.name + if (g.locked) "  🔒" else "", fontSize = 17.sp, color = rowContentColor(), maxLines = 1,
+                            Text(g.name + if (g.locked) "  🔒" else "", fontSize = 15.sp, color = rowContentColor(), maxLines = 1,
                                 overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                         }
+                      }
                     }
                 }
             }
