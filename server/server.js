@@ -508,6 +508,7 @@ app.post('/checkout/:plan', async (req, res) => {
   res.redirect(303, session.url);
 });
 // ---- Cash App checkout: shows a QR code to pay $cashtag the exact amount with an order code in the note.
+const ORDER_STATUS = { approved: 'Approved', rejected: 'Rejected', cancelled: 'Cancelled by customer', reversed: 'Undone (not paid)' };
 const PLAN_DAYS = { monthly: 31, yearly: 366, lifetime: 'lifetime' };
 function newOrderCode() {
   for (;;) {
@@ -620,11 +621,13 @@ app.get('/admin', (req, res) => {
     ${pending.length ? `<p class="muted">Check your Cash App: find a payment of the amount below with the order code in the note, then press Approve.</p>
     <table><tr><th>Code</th><th>Account</th><th>Plan</th><th>Amount</th><th>Ordered</th><th></th></tr>${pending.map(o => `<tr>
       <td><b>${esc(o.code)}</b></td><td>${esc(o.email)}</td><td>${esc(PLAN_LABEL[o.plan])}</td><td>${money(o.amount)}</td><td>${new Date(o.created).toLocaleString()}</td>
-      <td><form class="inline" method="post" action="/admin/orders/${o.id}/approve"><button style="background:#00c244">Approve</button></form>
+      <td><form class="inline" method="post" action="/admin/orders/${o.id}/approve" onsubmit="return confirm('Did you receive ${money(o.amount)} in Cash App with ${esc(o.code)} in the note?\\n\\nOnly approve if the payment is in your Cash App.')"><button style="background:#00c244">Approve</button></form>
           <form class="inline" method="post" action="/admin/orders/${o.id}/reject"><button class="red">Reject</button></form></td></tr>`).join('')}</table>`
       : '<p class="muted">No payments waiting.</p>'}
-    ${recent.length ? `<details style="margin-top:10px"><summary class="muted">Recent orders</summary><table>${recent.map(o => `<tr><td>${esc(o.code)}</td><td>${esc(o.email)}</td>
-      <td>${esc(PLAN_LABEL[o.plan])}</td><td>${money(o.amount)}</td><td>${esc(o.status)}</td></tr>`).join('')}</table></details>` : ''}
+    ${recent.length ? `<details style="margin-top:10px" open><summary class="muted">Recent orders</summary><table>
+      <tr><th>Code</th><th>Account</th><th>Plan</th><th>Amount</th><th>Status</th><th></th></tr>${recent.map(o => `<tr><td>${esc(o.code)}</td><td>${esc(o.email)}</td>
+      <td>${esc(PLAN_LABEL[o.plan])}</td><td>${money(o.amount)}</td><td>${esc(ORDER_STATUS[o.status] || o.status)}</td>
+      <td>${o.status === 'approved' ? `<form class="inline" method="post" action="/admin/orders/${o.id}/undo" onsubmit="return confirm('Undo ${esc(o.code)}? This removes the ${esc(PLAN_LABEL[o.plan])} Premium it gave and takes ${money(o.amount)} out of Revenue.')"><button class="red">Undo approval</button></form>` : ''}</td></tr>`).join('')}</table></details>` : ''}
     <form class="row" method="post" action="/admin/cashtag" style="margin-top:12px"><label style="flex:1">Your Cash App $cashtag (leave empty to turn Cash App off)
       <input name="cashtag" value="${esc(cashtag() ? '$' + cashtag() : '')}" placeholder="$yourcashtag"></label><button class="gray">Save</button></form></div>`;
   const cloudHtml = cloudState.on && cloudState.restored
@@ -681,6 +684,23 @@ app.post('/admin/orders/:id/approve', (req, res) => {
     extendPremium(u, o.plan, PLAN_DAYS[o.plan]);
     db.prepare(`UPDATE orders SET status = 'approved', decided = ? WHERE id = ?`).run(Date.now(), o.id);
     db.prepare('INSERT INTO payments (user_id, plan, amount, ref, created) VALUES (?, ?, ?, ?, ?)').run(u.id, o.plan, o.amount, `CASHAPP ${o.code}`, Date.now());
+  }
+  res.redirect('/admin');
+});
+// Undo an approval (approved by mistake / payment never arrived): take back the Premium it gave and its revenue.
+app.post('/admin/orders/:id/undo', (req, res) => {
+  const me = requireAdmin(req, res); if (!me) return;
+  const o = db.prepare(`SELECT * FROM orders WHERE id = ? AND status = 'approved'`).get(+req.params.id);
+  const u = o && userById(o.user_id);
+  if (o) {
+    db.prepare(`UPDATE orders SET status = 'reversed', decided = ? WHERE id = ?`).run(Date.now(), o.id);
+    db.prepare('DELETE FROM payments WHERE ref = ?').run(`CASHAPP ${o.code}`);
+  }
+  if (o && u && !isAdmin(u)) {
+    const days = PLAN_DAYS[o.plan];
+    const until = days === 'lifetime' ? 0 : (u.premium_until >= LIFETIME ? LIFETIME : u.premium_until - days * DAY);
+    if (until > Date.now()) db.prepare('UPDATE users SET premium_until = ? WHERE id = ?').run(until, u.id);
+    else db.prepare(`UPDATE users SET plan = 'none', premium_until = 0 WHERE id = ?`).run(u.id);
   }
   res.redirect('/admin');
 });
