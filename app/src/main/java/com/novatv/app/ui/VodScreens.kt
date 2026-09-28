@@ -106,6 +106,9 @@ fun VodBrowseScreen(
     var posterTarget by remember { mutableIntStateOf(if (saved != null && startCategory == null) saved.second else -1) }
     var goToPosters by remember { mutableIntStateOf(if (posterTarget >= 0) 1 else 0) }
     var inPosters by remember { mutableStateOf(false) }
+    /** Browsing the posters: the menu and the categories slide away and the posters use the whole width (TiviMate). */
+    var browsing by remember { mutableStateOf(false) }
+    val cols = if (browsing) 8 else 7
     // Moving over a category shows it a moment after the remote stops there (smooth, no jumping while scrolling).
     var hoverKey by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(hoverKey) {
@@ -156,14 +159,14 @@ fun VodBrowseScreen(
     // Keep the chosen category in view in the list (also when coming back).
     LaunchedEffect(catKeys) {
         val i = catKeys.indexOf(category)
-        if (i >= 0) runCatching { catState.scrollToItem((i - 4).coerceAtLeast(0)) }
+        if (i >= 8) runCatching { catState.scrollToItem(i - 3) }
     }
     // OK on a category (or coming back from a title): go onto the posters.
     LaunchedEffect(goToPosters, shown) {
         if (goToPosters == 0 || shown.isEmpty()) return@LaunchedEffect
         val target = posterTarget.coerceIn(0, shown.lastIndex)
         posterTarget = target
-        runCatching { gridState.scrollToItem(target / 7 * 7) }
+        runCatching { gridState.scrollToItem(target / cols * cols) }
         repeat(20) {
             delay(40)
             if (inPosters) { goToPosters = 0; return@LaunchedEffect }
@@ -172,21 +175,35 @@ fun VodBrowseScreen(
         goToPosters = 0
     }
     // TiviMate: Back while browsing the posters goes back to the category you picked (not out of Movies).
-    BackHandler(enabled = inPosters) {
-        val i = catKeys.indexOf(category)
+    // The categories come back exactly as they were, with the remote on the one you were browsing.
+    fun backToCategories() {
+        browsing = false
         scope.launch {
-            if (i >= 0) runCatching { catState.scrollToItem((i - 4).coerceAtLeast(0)) }
-            delay(30)
-            runCatching { listFocus.requestFocus() }
+            repeat(15) {
+                delay(40)
+                runCatching { listFocus.requestFocus() }
+                if (!inPosters) return@launch
+            }
         }
     }
+    BackHandler(enabled = browsing || inPosters) { backToCategories() }
+    // The grid re-flows (7 ⇄ 8 across) when the categories hide/show: keep the poster you're on in view.
+    LaunchedEffect(browsing) { runCatching { gridState.scrollToItem(focusedIndex / cols * cols) } }
 
     Row(Modifier.fillMaxSize().background(colors.background)) {
+      androidx.compose.animation.AnimatedVisibility(
+        visible = !browsing,
+        enter = androidx.compose.animation.expandHorizontally(androidx.compose.animation.core.tween(220)) +
+            androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(200)),
+        exit = androidx.compose.animation.shrinkHorizontally(androidx.compose.animation.core.tween(220)) +
+            androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(160)),
+      ) {
+       Row(Modifier.fillMaxHeight()) {
         VodRail(current = if (kind == VodKind.MOVIES) MenuDest.MOVIES else MenuDest.SHOWS, onNavigate = { d ->
             if (d == MenuDest.MY_LIST) category = VOD_MY_LIST else onNavigate(d)
         })
-        // Categories (TiviMate): on the page itself, no heading or counts; moving over one shows it,
-        // and the list scrolls so the highlighted category stays in the same place.
+        // Categories (TiviMate): on the page itself, no heading or counts; moving over one shows it.
+        // The remote goes through them one by one (the list only scrolls at its edges).
         Column(Modifier.width(240.dp).fillMaxHeight().padding(start = 10.dp, end = 10.dp, top = 36.dp)) {
             LazyColumn(state = catState) {
                 val rows = listOf(
@@ -197,10 +214,7 @@ fun VodBrowseScreen(
                     TvRow(
                         modifier = if (key == category) Modifier.focusRequester(listFocus) else Modifier,
                         selected = key == category,
-                        onFocused = {
-                            hoverKey = key
-                            scope.launch { runCatching { catState.animateScrollToItem((i - 4).coerceAtLeast(0)) } }
-                        },
+                        onFocused = { hoverKey = key },
                         // OK: open this category and start browsing its posters.
                         onClick = { hoverKey = key; category = key; posterTarget = 0; goToPosters++ },
                     ) {
@@ -210,6 +224,8 @@ fun VodBrowseScreen(
                 }
             }
         }
+       }
+      }
         // Details on top, posters below
         Column(Modifier.weight(1f).fillMaxHeight()) {
             when {
@@ -237,19 +253,23 @@ fun VodBrowseScreen(
                         LazyVerticalGrid(
                             // TiviMate: seven posters across; the row you're on scrolls up to the top.
                             state = gridState,
-                            columns = GridCells.Fixed(7),
+                            columns = GridCells.Fixed(cols),
                             verticalArrangement = Arrangement.spacedBy(12.dp),
                             horizontalArrangement = Arrangement.spacedBy(10.dp),
                             contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 16.dp, end = 16.dp, bottom = 300.dp, top = 2.dp),
-                            modifier = Modifier.fillMaxSize().onFocusChanged { inPosters = it.hasFocus },
+                            modifier = Modifier.fillMaxSize().onFocusChanged { inPosters = it.hasFocus }
+                                // Left on the first poster of a row: back to the categories.
+                                .onPreviewKeyEvent { e ->
+                                    if (e.type == KeyEventType.KeyDown && e.key == Key.DirectionLeft && focusedIndex % cols == 0) { backToCategories(); true } else false
+                                },
                         ) {
                             itemsIndexed(shown, key = { i, it -> "$i:${it.id}" }) { i, item ->
                                 PosterCard(item,
                                     modifier = if (i == posterTarget) Modifier.focusRequester(posterFocus) else Modifier,
                                     onFocused = {
-                                        focusedItem = item; focusedIndex = i
+                                        focusedItem = item; focusedIndex = i; browsing = true
                                         context.app.vodSpot[kind] = category to i
-                                        scope.launch { runCatching { gridState.animateScrollToItem(i / 7 * 7) } }
+                                        scope.launch { runCatching { gridState.animateScrollToItem(i / cols * cols) } }
                                     }) { context.app.vodSpot[kind] = category to i; onOpen(item) }
                             }
                         }
