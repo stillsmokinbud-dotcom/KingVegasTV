@@ -241,23 +241,12 @@ internal fun PlayerInfoPanel(
             }
 
             if (interactive) {
-                // TiviMate: a full-width timeline, "01:45 / 1:00:00" under its left end, the play
-                // controls in the middle and a round "Live" button at the right end.
-                val elapsed = nowProg?.let { now - it.start } ?: player.currentPosition
-                val total = nowProg?.let { it.end - it.start } ?: player.duration.takeIf { it > 0 } ?: 0L
-                ProgressBar(if (total > 0) elapsed.toFloat() / total else 1f, Modifier.fillMaxWidth().padding(top = 14.dp))
-                Box(Modifier.fillMaxWidth().padding(top = 4.dp)) {
-                    Text("${hms(elapsed)} / ${hms(total)}", fontSize = 13.sp, color = PanelText,
-                        modifier = Modifier.align(Alignment.TopStart).padding(top = 2.dp))
-                    Row(Modifier.align(Alignment.Center), horizontalArrangement = Arrangement.spacedBy(0.dp)) {
-                        RoundButton(I.SkipPrevious, null, size = 38) { onAction("prev") }
-                        RoundButton(I.FastRewind, null, size = 38) { onAction("rew") }
-                        RoundButton(if (isPlaying) I.Pause else I.PlayArrow, null, Modifier.focusRequester(playFocus), size = 38) { onAction("play") }
-                        RoundButton(I.FastForward, null, size = 38) { onAction("ffwd") }
-                        RoundButton(I.SkipNext, null, size = 38) { onAction("next") }
-                    }
-                    RoundButton(I.LiveTv, "Live", Modifier.align(Alignment.CenterEnd), size = 38) { onAction("live") }
-                }
+                // TiviMate (live TV): just a thin full-width progress line for the program on now, then the row
+                // of tiles. (Play controls are for catch-up and movies; Restart / Record are in the menu.)
+                val elapsed = nowProg?.let { now - it.start } ?: 0L
+                val total = nowProg?.let { it.end - it.start } ?: 0L
+                ProgressBar(if (total > 0) elapsed.toFloat() / total else 0f, Modifier.fillMaxWidth().padding(top = 12.dp))
+                var focusedRecent by remember { mutableStateOf<Channel?>(null) }
                 // TV guide · History · recent channels · Clear
                 LazyRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -270,14 +259,15 @@ internal fun PlayerInfoPanel(
                     val showGuide = settings.bool("player.btn_guide")
                     val showHistory = settings.bool("player.btn_history")
                     if (showGuide) item {
-                        Tile(I.GridView, "TV guide", Modifier.focusRequester(tilesFocus)) { onAction("guide") }
+                        Tile(I.GridView, "TV guide", Modifier.focusRequester(tilesFocus), onFocused = { focusedRecent = null }) { onAction("guide") }
                     }
-                    if (showHistory) item { Tile(I.History, "History", if (!showGuide) Modifier.focusRequester(tilesFocus) else Modifier) { onAction("history") } }
-                    item { Tile(I.Replay, "Restart", if (!showGuide && !showHistory) Modifier.focusRequester(tilesFocus) else Modifier) { onAction("restart") } }
-                    item { Tile(I.FiberManualRecord, "Record") { onAction("record") } }
-                    itemsIndexed(recent.take(settings.int("general.recent_count").coerceAtLeast(1))) { _, c ->
+                    if (showHistory) item { Tile(I.History, "History", if (!showGuide) Modifier.focusRequester(tilesFocus) else Modifier,
+                        onFocused = { focusedRecent = null }) { onAction("history") } }
+                    itemsIndexed(recent.take(settings.int("general.recent_count").coerceAtLeast(1))) { i, c ->
                         val p = epg.at(c, now)
-                        TvRow(modifier = Modifier.width(150.dp).height(64.dp), onClick = { onPlayRecent(c) }) {
+                        TvRow(modifier = Modifier.width(150.dp).height(64.dp)
+                            .then(if (!showGuide && !showHistory && i == 0) Modifier.focusRequester(tilesFocus) else Modifier),
+                            onFocused = { focusedRecent = c }, onClick = { onPlayRecent(c) }) {
                             Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp)) {
                                 // Recent channels › "Show channel names" (otherwise the logo).
                                 if (settings.bool("recent.show_names")) Text(c.name, fontSize = 12.sp, fontWeight = FontWeight.Medium,
@@ -288,8 +278,12 @@ internal fun PlayerInfoPanel(
                             }
                         }
                     }
-                    if (recent.isNotEmpty()) item { Tile(I.Delete, "Clear") { onAction("clear_history") } }
+                    if (recent.isNotEmpty()) item { Tile(I.Delete, "Clear", onFocused = { focusedRecent = null }) { onAction("clear_history") } }
                 }
+                // TiviMate: what's on the highlighted recent channel, under the row.
+                val rp = focusedRecent?.let { epg.at(it, now) }
+                Text(if (rp != null) "${timeText(rp.start, settings, context)} — ${timeText(rp.end, settings, context)}   ${rp.title}" else " ",
+                    fontSize = 12.sp, color = PanelDim, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
                 Text("⌄", fontSize = 16.sp, color = PanelDim, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
             }
         }
@@ -297,8 +291,8 @@ internal fun PlayerInfoPanel(
 }
 
 @Composable
-private fun Tile(icon: ImageVector, label: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    TvRow(modifier = modifier.width(96.dp).height(64.dp), onClick = onClick) {
+private fun Tile(icon: ImageVector, label: String, modifier: Modifier = Modifier, onFocused: () -> Unit = {}, onClick: () -> Unit) {
+    TvRow(modifier = modifier.width(96.dp).height(64.dp), onFocused = onFocused, onClick = onClick) {
         Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
             Icon(icon, null, tint = rowContentColor(), modifier = Modifier.size(22.dp))
             Text(label, fontSize = 11.sp, color = rowContentColor(), maxLines = 1, modifier = Modifier.padding(top = 3.dp))
@@ -344,7 +338,7 @@ internal fun PlayerMenuRow(
             }
         }
         LazyRow(
-            horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+            horizontalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterHorizontally),
             modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth()
                 .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.7f))))
                 .padding(start = 30.dp, end = 30.dp, top = 60.dp, bottom = 28.dp)
@@ -445,7 +439,7 @@ internal fun PlayerChannelList(
 
         if (scheduleFor == null) {
             // Channel list: logo, "1  Channel name" in bold, what's on under it and a thin progress line.
-            Column(Modifier.width(440.dp).fillMaxHeight().background(Color(0xE0101318)).padding(horizontal = 10.dp, vertical = 16.dp)) {
+            Column(Modifier.width(360.dp).fillMaxHeight().background(Color(0xD8101318)).padding(horizontal = 10.dp, vertical = 16.dp)) {
                 Text(title, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = PanelText, modifier = Modifier.padding(start = 8.dp, bottom = 8.dp))
                 LazyColumn(
                     state = state,
@@ -482,6 +476,24 @@ internal fun PlayerChannelList(
                             if (ch.catchupDays > 0) Icon(I.History, null, tint = rowContentColor(true), modifier = Modifier.padding(start = 6.dp).size(14.dp))
                             if (playing) Text("▶", fontSize = 12.sp, color = androidx.compose.material3.MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.padding(start = 6.dp))
+                        }
+                    }
+                }
+            }
+            // TiviMate: the highlighted channel's programs right next to the list (Right goes into them).
+            if (focusedChannel != null && showPrograms) {
+                val upcoming = remember(focusedChannel.id, epg) {
+                    epg.programsFor(focusedChannel).filter { it.end > now }.take(14)
+                }
+                Column(Modifier.width(300.dp).fillMaxHeight().background(Color(0xB8101318)).padding(horizontal = 12.dp, vertical = 16.dp)) {
+                    Text((focusedChannel.number?.let { "$it  " } ?: "") + focusedChannel.name, fontSize = 15.sp, fontWeight = FontWeight.Bold,
+                        color = PanelText, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(focusedChannel.group, fontSize = 12.sp, color = PanelDim, maxLines = 1, modifier = Modifier.padding(bottom = 8.dp))
+                    if (upcoming.isEmpty()) Text("No information", fontSize = 13.sp, color = PanelDim)
+                    upcoming.forEach { p ->
+                        Row(Modifier.padding(vertical = 5.dp)) {
+                            Text(timeText(p.start, settings, context), fontSize = 13.sp, color = PanelDim, modifier = Modifier.width(76.dp))
+                            Text(p.title, fontSize = 13.sp, color = PanelText, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }
                 }
