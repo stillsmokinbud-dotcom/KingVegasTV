@@ -483,7 +483,13 @@ fun PlayerScreen(
         if (settings.bool("appearance.show_clock") && overlay == Overlay.NONE && !bannerVisible) PlayerClock(settings)
 
         // TiviMate-style info panel: passive after a channel change, interactive (controls + tiles) on OK.
-        if ((bannerVisible && overlay == Overlay.NONE) || overlay == Overlay.CONTROL) {
+        // Slides / fades in and out smoothly, like TiviMate (never pops on or off).
+        androidx.compose.animation.AnimatedVisibility(
+            visible = (bannerVisible && overlay == Overlay.NONE) || overlay == Overlay.CONTROL,
+            enter = androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(180)) +
+                androidx.compose.animation.slideInVertically(androidx.compose.animation.core.tween(220)) { it / 8 },
+            exit = androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(160)),
+        ) {
             val shownChannel = peekIndex?.let { queue.getOrNull(it) } ?: channel
             PlayerInfoPanel(
                 settings = settings, channel = shownChannel, epg = epg, player = player,
@@ -550,7 +556,12 @@ fun PlayerScreen(
             )
         }
 
-        if (overlay == Overlay.MENU) {
+        androidx.compose.animation.AnimatedVisibility(
+            visible = overlay == Overlay.MENU,
+            enter = androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(160)) +
+                androidx.compose.animation.slideInVertically(androidx.compose.animation.core.tween(200)) { it / 6 },
+            exit = androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(140)),
+        ) {
             val fav = channel.id in favorites
             val v = player.videoFormat
             val a = player.audioFormat
