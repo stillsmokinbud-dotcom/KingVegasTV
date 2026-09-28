@@ -152,6 +152,36 @@ class App : Application() {
                     license.reportLines(r.list, r.hosts)
                 }
         }
+        // TV service bought on the website: add it as a playlist by itself (once per login, so a playlist the
+        // customer deletes stays deleted). A paid plan replaces the login of the free-trial playlist.
+        appScope.launch {
+            license.account.map { it?.iptv.orEmpty() }.distinctUntilChanged().collect { lines ->
+                if (lines.isEmpty()) return@collect
+                val done = settings.current().str("data.iptv_added").split('\n').filter { it.isNotBlank() }.toMutableSet()
+                var changed = false
+                for (l in lines.sortedBy { !it.trial }) {
+                    val key = "${l.server.trimEnd('/')}|${l.username}"
+                    if (key in done || l.server.isBlank() || l.username.isBlank()) continue
+                    done += key
+                    val existing = playlists.readPlaylists()
+                    if (existing.any { it.username == l.username && it.url.trimEnd('/') == l.server.trimEnd('/') }) continue
+                    val name = l.name.ifBlank { "KINGVEGAS TV" }
+                    val trialList = if (!l.trial) existing.firstOrNull {
+                        it.type == com.novatv.app.playlist.PlaylistType.XTREAM && it.name == "$name (trial)" } else null
+                    playlists.save(
+                        trialList?.copy(name = name, url = l.server, username = l.username, password = l.password)
+                            ?: com.novatv.app.playlist.Playlist(
+                                id = playlists.newId(), name = if (l.trial) "$name (trial)" else name,
+                                type = com.novatv.app.playlist.PlaylistType.XTREAM,
+                                url = l.server, username = l.username, password = l.password,
+                            )
+                    )
+                    changed = true
+                }
+                settings.set("data.iptv_added", done.joinToString("\n"))
+                if (changed) runCatching { playlists.refresh() }
+            }
+        }
         // Settings → TV guide → "Update when a playlist is updated"
         playlists.onChannelsUpdated = {
             if (settings.current().bool("epg.update_on_playlist_change")) appScope.launch { epg.update(skipIfNewerThanMs = 10 * 60_000L) }
