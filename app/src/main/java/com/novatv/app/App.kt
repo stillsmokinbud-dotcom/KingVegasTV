@@ -52,6 +52,8 @@ class App : Application() {
     @Volatile var sleepAt: Long = 0L
     /** Settings › Playlists › Update all playlists: spinning while it runs, then the result under it (TiviMate). */
     val playlistsUpdating = androidx.compose.runtime.mutableStateOf(false)
+    /** Movies / Shows: the category and poster you were on (Back from a title returns right there). */
+    val vodSpot = HashMap<com.novatv.app.playlist.VodKind, Pair<String, Int>>()
     val playlistsUpdateNote = androidx.compose.runtime.mutableStateOf<String?>(null)
     /** Search box text and the result you opened (Back from it returns to the same search). */
     @Volatile var searchQuery: String = ""
