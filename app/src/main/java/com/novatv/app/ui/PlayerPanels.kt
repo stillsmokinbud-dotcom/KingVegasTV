@@ -404,7 +404,12 @@ internal fun PlayerChannelList(
     }
     val now = System.currentTimeMillis()
 
-    Row(Modifier.fillMaxSize().focusProperties { exit = { FocusRequester.Cancel } }.focusGroup()) {
+    Row(Modifier.fillMaxSize()
+        // Hold Back: close the list straight back to full screen (TiviMate).
+        .onPreviewKeyEvent { e ->
+            if (e.key == Key.Back && e.type == KeyEventType.KeyDown && e.nativeKeyEvent.repeatCount > 0) { onDismiss(); true } else false
+        }
+        .focusProperties { exit = { FocusRequester.Cancel } }.focusGroup()) {
         androidx.compose.animation.AnimatedVisibility(
             visible = groupsOpen,
             enter = androidx.compose.animation.expandHorizontally(tween(180)) + androidx.compose.animation.fadeIn(tween(150)),
