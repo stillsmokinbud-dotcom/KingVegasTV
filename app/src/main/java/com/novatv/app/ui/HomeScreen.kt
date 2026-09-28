@@ -1165,7 +1165,7 @@ private fun SideDrawer(
                         .then(if (mi == 0) Modifier.focusRequester(firstMenuFocus).onPreviewKeyEvent { e ->
                             if (e.type == KeyEventType.KeyDown && e.key == Key.DirectionUp) { runCatching { settingsRowFocus.requestFocus() }; true } else false
                         } else Modifier),
-                    selected = d == MenuDest.GUIDE || (d == MenuDest.MY_LIST && myListOpen),
+                    selected = (d == MenuDest.GUIDE && railExpanded) || (d == MenuDest.MY_LIST && myListOpen), // slim bar: no pill (TiviMate)
                     onFocused = { myListOpen = d == MenuDest.MY_LIST },
                     onClick = { if (d == MenuDest.MY_LIST) myListOpen = true else onMenu(d) },
                 ) {
@@ -1199,9 +1199,9 @@ private fun SideDrawer(
                 }
             }
         } else if (groups.isNotEmpty()) {
-            // TiviMate: the groups sit on the guide's own background, starting level with the channel rows.
+            // TiviMate: the groups sit on the guide's own background, high enough that eight of them show at once.
             Column(Modifier.width(GROUPS_COL).fillMaxHeight().background(colors.background)
-                .padding(start = 12.dp, end = 12.dp, top = 250.dp, bottom = 12.dp)) {
+                .padding(start = 12.dp, end = 12.dp, top = 150.dp, bottom = 12.dp)) {
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.onFocusChanged { groupsFocused = it.hasFocus }.onPreviewKeyEvent { e ->
@@ -1223,7 +1223,7 @@ private fun SideDrawer(
                             selected = i == groupIndex,
                             onClick = { onGroup(i) },
                         ) {
-                            Text(g.name + if (g.locked) "  🔒" else "", fontSize = 16.sp, color = rowContentColor(), maxLines = 1,
+                            Text(g.name + if (g.locked) "  🔒" else "", fontSize = 17.sp, color = rowContentColor(), maxLines = 1,
                                 overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                         }
                     }
