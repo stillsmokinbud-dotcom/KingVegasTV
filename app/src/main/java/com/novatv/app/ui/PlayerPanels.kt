@@ -335,10 +335,17 @@ internal fun PlayerInfoPanel(
                                 if (settings.bool("recent.show_names") || c.logo.isNullOrBlank()) Text(c.name, fontSize = 13.sp,
                                     fontWeight = FontWeight.Bold, color = fg, maxLines = 2, overflow = TextOverflow.Ellipsis,
                                     textAlign = TextAlign.Center, lineHeight = 15.sp)
-                                else ChannelLogo(settings, c, 66.dp)
+                                else ChannelLogo(settings, c, 72.dp)
                             }
-                            Text(p?.title ?: "No information", fontSize = 10.sp, color = fg.copy(alpha = 0.8f), maxLines = 1,
+                            // What's on, lined up under the logo, with how far along it is on the box's bottom edge.
+                            Text(p?.title ?: "No information", fontSize = 11.sp, color = fg.copy(alpha = 0.9f), maxLines = 1,
                                 overflow = TextOverflow.Ellipsis)
+                            Box(Modifier.fillMaxWidth().padding(top = 3.dp).height(2.dp).clip(RoundedCornerShape(1.dp))
+                                .background(fg.copy(alpha = 0.25f))) {
+                                if (p != null) Box(Modifier.fillMaxHeight()
+                                    .fillMaxWidth(((now - p.start).toFloat() / (p.end - p.start).coerceAtLeast(1)).coerceIn(0f, 1f))
+                                    .background(fg.copy(alpha = 0.9f)))
+                            }
                         }
                     }
                     if (recent.isNotEmpty()) item { Tile(I.Delete, "Clear", onFocused = { focusedRecent = null }) { onAction("clear_history") } }
