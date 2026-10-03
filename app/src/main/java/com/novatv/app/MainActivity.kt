@@ -145,19 +145,22 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * The very first time the app opens after it's installed: the KINGVEGAS TV logo, which then fades
-     * away into the TV guide. Only once — never again on later starts (remembered on the device).
+     * Every time the app starts: the KINGVEGAS TV logo, which then fades smoothly away into the last
+     * channel that was being watched.
      */
     @androidx.compose.runtime.Composable
     private fun WelcomeLogo() {
-        val prefs = androidx.compose.runtime.remember { getSharedPreferences("kv_welcome", MODE_PRIVATE) }
-        var show by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(!prefs.getBoolean("shown", false)) }
+        var show by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(true) }
         if (!show) return
         val fade = androidx.compose.runtime.remember { androidx.compose.animation.core.Animatable(1f) }
         androidx.compose.runtime.LaunchedEffect(Unit) {
-            prefs.edit().putBoolean("shown", true).apply()
-            kotlinx.coroutines.delay(2200)
-            fade.animateTo(0f, androidx.compose.animation.core.tween(900))
+            // Stay up while the app gets ready behind the logo, until the last channel's picture is really
+            // running (at most 8 seconds), so the fade goes straight into moving video with nothing jumping.
+            kotlinx.coroutines.delay(1800)
+            var waited = 1800
+            while (waited < 8000 && !app.shared.hasPicture) { kotlinx.coroutines.delay(100); waited += 100 }
+            if (app.shared.hasPicture) kotlinx.coroutines.delay(500)
+            fade.animateTo(0f, androidx.compose.animation.core.tween(1600, easing = androidx.compose.animation.core.FastOutSlowInEasing))
             show = false
         }
         Box(
