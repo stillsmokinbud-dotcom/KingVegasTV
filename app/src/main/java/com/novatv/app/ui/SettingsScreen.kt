@@ -448,6 +448,7 @@ private fun LazyListScope.dynamicRows(key: String, s: AppSettings, push: (Page) 
                             p.name,
                             "Channels: ${app.playlists.channelCount(p.id)}, movies: ${vodMovies.count { it.playlistId == p.id }}, shows: ${vodShows.count { it.playlistId == p.id }}" +
                                 (vodStatus?.let { "\n$it" } ?: vodProblems[p.id]?.let { "\nMovies: $it" } ?: ""),
+                            fitValue = true,
                             leading = {
                                 Icon(if (p.enabled) Icons.Filled.CheckCircle else Icons.Outlined.Circle, null,
                                     tint = if (p.enabled) androidx.compose.material3.MaterialTheme.colorScheme.primary else rowContentColor(true))
