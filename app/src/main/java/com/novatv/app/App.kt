@@ -115,6 +115,11 @@ class App : Application() {
                 settings.set("groups.sort", "playlist")
                 settings.set("data.groups_like_tivimate_v1", "done")
             }
+            // One time: the history boxes show channel logos (like TiviMate) instead of names.
+            if (settings.current().str("data.recent_logos_v1") != "done") {
+                settings.set("recent.show_names", "false")
+                settings.set("data.recent_logos_v1", "done")
+            }
             // One time: Search starts listening as soon as it opens (TiviMate).
             if (settings.current().str("data.voice_search_v1") != "done") {
                 settings.set("search.voice", "true")
