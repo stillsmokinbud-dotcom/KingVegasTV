@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -92,13 +93,19 @@ fun PlayerScreen(
         return
     }
 
-    var index by remember { mutableIntStateOf(queue.indexOfFirst { it.id == startChannelId }.coerceAtLeast(0)) }
+    // Coming back to the player (from Settings, catch-up…): stay on the channel that was on, not the one it first opened with.
+    val resumeId = PlayerResume.at.takeIf { PlayerResume.from == startChannelId }
+    var index by remember {
+        mutableIntStateOf((resumeId?.let { id -> queue.indexOfFirst { it.id == id } }?.takeIf { it >= 0 }
+            ?: queue.indexOfFirst { it.id == startChannelId }).coerceAtLeast(0))
+    }
     var previousIndex by remember { mutableStateOf<Int?>(null) }
     var overlay by remember { mutableStateOf(Overlay.NONE) }
     var bannerTick by remember { mutableIntStateOf(0) }
     var bannerVisible by remember { mutableStateOf(true) }
     var numberBuffer by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
+    var recNote by remember { mutableStateOf<String?>(null) }
     var retries by remember { mutableIntStateOf(0) }
     var aspect by remember { mutableStateOf(settings.str("playback.aspect")) }
     // Sleep timer: an app-wide deadline (keeps counting in the guide too); when it's up the app closes.
@@ -138,6 +145,8 @@ fun PlayerScreen(
     LaunchedEffect(channel.id) {
         while (true) { delay(60_000); if (player.isPlaying) repo.addWatchTime(channel.id, 60) }
     }
+
+    androidx.compose.runtime.SideEffect { PlayerResume.from = startChannelId; PlayerResume.at = channel.id }
 
     fun switchTo(i: Int) {
         if (queue.isEmpty()) return
@@ -181,7 +190,8 @@ fun PlayerScreen(
     // Freeze / drop-out recovery lives in the shared player (SharedPlayback.Guard): it reconnects
     // on errors, when the server closes the stream, when loading hangs and when the picture freezes.
     DisposableEffect(Unit) {
-        app.shared.onReconnectChanged = { on -> error = if (on) "Reconnecting…" else null }
+        // Only the reconnect message is taken away again (not "Stopped", a recording note…).
+        app.shared.onReconnectChanged = { on -> if (on) error = "Reconnecting…" else if (error == "Reconnecting…") error = null }
         onDispose { app.shared.onReconnectChanged = null }
     }
 
@@ -283,7 +293,8 @@ fun PlayerScreen(
             "volume_up" -> audio.adjustStreamVolume(android.media.AudioManager.STREAM_MUSIC, android.media.AudioManager.ADJUST_RAISE, android.media.AudioManager.FLAG_SHOW_UI)
             "volume_down" -> audio.adjustStreamVolume(android.media.AudioManager.STREAM_MUSIC, android.media.AudioManager.ADJUST_LOWER, android.media.AudioManager.FLAG_SHOW_UI)
             "volume_mute" -> audio.adjustStreamVolume(android.media.AudioManager.STREAM_MUSIC, android.media.AudioManager.ADJUST_TOGGLE_MUTE, android.media.AudioManager.FLAG_SHOW_UI)
-            "play_pause" -> if (stopped) { stopped = false; error = null; player.prepare(); player.play() } else player.playWhenReady = !player.playWhenReady
+            "play_pause" -> if (stopped) { stopped = false; error = null; player.prepare(); player.play() } else if (player.playbackState == Player.STATE_IDLE) { player.prepare(); player.playWhenReady = true }
+                else player.playWhenReady = !player.playWhenReady
             "stop" -> { player.playWhenReady = false; player.stop(); stopped = true; error = "Stopped · press Play to resume" }
             "restart" -> premiumOr("Catch-up") {
                 val prog = epg.at(channel, System.currentTimeMillis())
@@ -292,7 +303,7 @@ fun PlayerScreen(
                 else error = if (prog == null) "No TV guide info for this program, so it can't be restarted."
                     else "This channel doesn't offer catch-up."
             }
-            "go_live" -> { player.seekToDefaultPosition(); player.play() }
+            "go_live" -> { if (player.playbackState == Player.STATE_IDLE) player.prepare(); player.seekToDefaultPosition(); player.play() }
             "search" -> onNavigate(MenuDest.SEARCH)
             "history" -> onNavigate(MenuDest.HISTORY)
             "movies" -> onNavigate(MenuDest.MOVIES)
@@ -302,14 +313,16 @@ fun PlayerScreen(
             "record" -> premiumOr("Recording") {
                 val rec = app.recordings
                 val running = rec.items.value.firstOrNull { it.channelId == channel.id && it.state == "recording" }
-                if (running != null) { rec.stop(running.id); error = "Recording stopped" }
+                // A quiet note in the corner (nothing pops up over the middle of the picture).
+                val note = if (running != null) { rec.stop(running.id); "Recording stopped" }
                 else {
                     val now = System.currentTimeMillis()
                     val prog = epg.at(channel, now)
                     rec.schedule(channel, prog?.title ?: channel.name, now, prog?.end?.takeIf { it > now + 60_000 } ?: (now + 3_600_000))
-                    error = "● Recording ${prog?.title ?: channel.name} (Recordings in the menu)"
+                    "Recording ${prog?.title ?: channel.name}"
                 }
-                scope.launch { delay(3000); if (error?.startsWith("●") == true || error == "Recording stopped") error = null }
+                recNote = note
+                scope.launch { delay(3500); if (recNote == note) recNote = null }
             }
             "multiview" -> premiumOr("Multiview") {
                 val others = queue.filter { it.id != channel.id }.take(3)
@@ -504,8 +517,9 @@ fun PlayerScreen(
                         "clear_history" -> scope.launch { app.settings.setList(DataKeys.RECENT, listOf(channel.id)) }
                         "prev" -> switchTo(index - 1)
                         "next" -> switchTo(index + 1)
-                        "rew" -> player.seekBack()
-                        "ffwd" -> player.seekForward()
+                        // Live TV can't be wound back or forward: leave the stream alone instead of making it reload.
+                        "rew" -> if (player.isCurrentMediaItemSeekable) player.seekBack()
+                        "ffwd" -> if (player.isCurrentMediaItemSeekable) player.seekForward()
                         "play" -> action("play_pause")
                         "live" -> action("go_live")
                         "restart" -> action("restart")
@@ -527,6 +541,22 @@ fun PlayerScreen(
         if (numberBuffer.isNotEmpty()) {
             Text(numberBuffer, fontSize = 56.sp, fontWeight = FontWeight.Bold, color = Color.White,
                 modifier = Modifier.align(Alignment.TopStart).padding(start = 48.dp, top = 40.dp))
+        }
+
+        // Top left: a small red dot while anything is being recorded (it keeps recording while other channels are watched).
+        val recs by app.recordings.items.collectAsState()
+        val recNow = recs.filter { it.state == "recording" }
+        if (recNow.isNotEmpty() || recNote != null) {
+            Row(verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.align(Alignment.TopStart).padding(start = 28.dp, top = 22.dp).clip(RoundedCornerShape(6.dp))
+                    .background(Color.Black.copy(alpha = 0.55f)).padding(horizontal = 10.dp, vertical = 5.dp)) {
+                if (recNow.isNotEmpty()) {
+                    Box(Modifier.size(9.dp).clip(androidx.compose.foundation.shape.CircleShape).background(Color(0xFFE53935)))
+                    Spacer(Modifier.width(7.dp))
+                }
+                Text(recNote ?: ("REC  " + recNow.joinToString(", ") { it.channelName }.take(48)), fontSize = 13.sp, color = Color.White,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
         }
 
         error?.let {
@@ -850,4 +880,10 @@ private fun PlayerClock(settings: AppSettings) {
             modifier = Modifier.align(align).clip(RoundedCornerShape(6.dp)).background(Color.Black.copy(alpha = 0.35f * alpha))
                 .padding(horizontal = 10.dp, vertical = 4.dp))
     }
+}
+
+/** Which channel the player was on, per opened player (so coming back from Settings doesn't jump to another channel). */
+internal object PlayerResume {
+    var from: String? = null
+    var at: String? = null
 }
