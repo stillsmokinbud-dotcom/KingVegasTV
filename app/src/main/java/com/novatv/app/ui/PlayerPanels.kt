@@ -241,18 +241,48 @@ internal fun PlayerInfoPanel(
             }
 
             if (interactive) {
-                // TiviMate (live TV): just a thin full-width progress line for the program on now, then the row
-                // of tiles. (Play controls are for catch-up and movies; Restart / Record are in the menu.)
+                // TiviMate: a thin full-width progress line for the program on now, then the row of tiles.
+                // Up from the tiles brings out the play controls ("01:21 / 30:00", ⏮ ⏪ ⏸ ⏩ ⏭, Live, record);
+                // Down from the controls goes back to the tiles.
                 val elapsed = nowProg?.let { now - it.start } ?: 0L
                 val total = nowProg?.let { it.end - it.start } ?: 0L
                 ProgressBar(if (total > 0) elapsed.toFloat() / total else 0f, Modifier.fillMaxWidth().padding(top = 12.dp))
                 var focusedRecent by remember { mutableStateOf<Channel?>(null) }
+                var controls by remember { mutableStateOf(false) }
+                var controlsUsed by remember { mutableStateOf(false) }
+                androidx.compose.animation.AnimatedVisibility(visible = controls) {
+                    Box(Modifier.fillMaxWidth().padding(top = 4.dp).onPreviewKeyEvent { e ->
+                        if (e.type != KeyEventType.KeyDown) false
+                        else if (e.key == Key.DirectionDown) { controls = false; true }
+                        else e.key == Key.DirectionUp
+                    }) {
+                        Text("${hms(elapsed)} / ${hms(total)}", fontSize = 13.sp, color = PanelText,
+                            modifier = Modifier.align(Alignment.CenterStart))
+                        Row(Modifier.align(Alignment.Center)) {
+                            RoundButton(I.SkipPrevious, null, size = 38) { onAction("prev") }
+                            RoundButton(I.FastRewind, null, size = 38) { onAction("rew") }
+                            RoundButton(if (isPlaying) I.Pause else I.PlayArrow, null, Modifier.focusRequester(playFocus), size = 38) { onAction("play") }
+                            RoundButton(I.FastForward, null, size = 38) { onAction("ffwd") }
+                            RoundButton(I.SkipNext, null, size = 38) { onAction("next") }
+                        }
+                        Row(Modifier.align(Alignment.CenterEnd), verticalAlignment = Alignment.CenterVertically) {
+                            RoundButton(I.LiveTv, null, size = 38) { onAction("live") }
+                            RoundButton(I.FiberManualRecord, null, size = 38) { onAction("record") }
+                        }
+                    }
+                }
+                LaunchedEffect(controls) {
+                    if (controls) { controlsUsed = true; repeat(15) { delay(30); if (runCatching { playFocus.requestFocus() }.isSuccess) return@LaunchedEffect } }
+                    else if (controlsUsed) { delay(30); runCatching { tilesFocus.requestFocus() } }
+                }
                 // TV guide · History · recent channels · Clear
                 LazyRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.padding(top = 8.dp)
                         .onPreviewKeyEvent { e ->
-                            if (e.type == KeyEventType.KeyDown && e.key == Key.DirectionDown) { onAction("menu"); true } else false
+                            if (e.type == KeyEventType.KeyDown && e.key == Key.DirectionDown) { onAction("menu"); true }
+                            else if (e.type == KeyEventType.KeyDown && e.key == Key.DirectionUp) { controls = true; true }
+                            else false
                         },
                 ) {
                     // History / Recent channels settings: "TV guide" and "History" buttons can be hidden.
