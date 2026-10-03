@@ -68,6 +68,17 @@ class PlaylistRepository(
         writePlaylists(if (list.any { it.id == p.id }) list.map { if (it.id == p.id) p else it } else list + p)
     }
 
+    /** Playlists sorting › Manual: move a playlist one place up (-1) or down (+1) in the list. */
+    suspend fun move(id: String, by: Int) {
+        val list = readPlaylists().toMutableList()
+        val from = list.indexOfFirst { it.id == id }
+        val to = from + by
+        if (from < 0 || to !in list.indices) return
+        list.add(to, list.removeAt(from))
+        writePlaylists(list)
+        reloadFromCache()
+    }
+
     suspend fun delete(id: String) {
         writePlaylists(readPlaylists().filterNot { it.id == id })
         cacheFile(id).delete()
