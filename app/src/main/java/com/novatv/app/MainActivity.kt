@@ -187,7 +187,7 @@ private fun AppRoot(settings: AppSettings, onFinish: () -> Unit) {
 
     fun push(s: Screen) {
         // Watching a channel: the guide comes back on the channel, not on the menu.
-        if (s is Screen.Player) app.guideMenuReturn = null
+        if (s is Screen.Player) { app.guideMenuReturn = null; com.novatv.app.ui.PlayerResume.from = null; com.novatv.app.ui.PlayerResume.at = null }
         stack.add(s)
     }
     fun pop() { if (stack.size > 1) stack.removeAt(stack.lastIndex) }
