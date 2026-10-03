@@ -22,6 +22,8 @@ object Afr {
 
     fun apply(activity: Activity?, s: AppSettings, format: Format?, vod: Boolean) {
         activity ?: return
+        // A switch still waiting for the previous channel must not fire on this one.
+        pending?.let { main.removeCallbacks(it) }; pending = null
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
         if (!s.premium || !s.bool(if (vod) "playback.afr_vod" else "playback.afr_tv")) return
         val fps = format?.frameRate?.takeIf { it > 0 } ?: return
