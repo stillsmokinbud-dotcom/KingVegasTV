@@ -433,7 +433,12 @@ fun GuideScreen(
             "shows" -> onNavigate(MenuDest.SHOWS)
             "recordings" -> onNavigate(MenuDest.RECORDINGS)
             "my_list" -> onNavigate(MenuDest.MY_LIST)
-            "record" -> if (!settings.premium) paywall = "Recording" else if (c != null) {
+            "record" -> if (!settings.premium) paywall = "Recording" else if (c != null &&
+                app.recordings.items.value.any { it.channelId == c.id && it.state == "recording" }) {
+                // Start/stop: this channel is being recorded, so the button stops it.
+                app.recordings.items.value.filter { it.channelId == c.id && it.state == "recording" }.forEach { app.recordings.stop(it.id) }
+                info = "Recording" to "Recording stopped: ${c.name}"
+            } else if (c != null) {
                 val now = System.currentTimeMillis()
                 val cell = if (onChannelCol) null else cellAt(c, focusTime)
                 val p = cell?.program ?: epg.at(c, now)
@@ -538,7 +543,7 @@ fun GuideScreen(
                     when (e.type) {
                         KeyEventType.KeyDown -> {
                             if (e.nativeKeyEvent.repeatCount == 0) { backLongFired = false; backDownSeen = true }
-                            else if (backDownSeen && !backLongFired) { backLongFired = true; guideAction("return_player") }
+                            else if (backDownSeen && !backLongFired) { backLongFired = true; guideAction(mapped("back_long").ifBlank { "return_player" }) }
                         }
                         KeyEventType.KeyUp -> {
                             if (backDownSeen && !backLongFired) { if (drawerOpen) guideBack() else guideAction(mapped("back")) }
