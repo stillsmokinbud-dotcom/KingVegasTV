@@ -246,7 +246,14 @@ internal fun PlayerInfoPanel(
                 // Down from the controls goes back to the tiles.
                 val elapsed = nowProg?.let { now - it.start } ?: 0L
                 val total = nowProg?.let { it.end - it.start } ?: 0L
-                ProgressBar(if (total > 0) elapsed.toFloat() / total else 0f, Modifier.fillMaxWidth().padding(top = 12.dp))
+                val frac = if (total > 0) (elapsed.toFloat() / total).coerceIn(0f, 1f) else 0f
+                // The line with a round marker at "now" (TiviMate).
+                Box(Modifier.fillMaxWidth().padding(top = 8.dp).height(11.dp)) {
+                    ProgressBar(frac, Modifier.fillMaxWidth().align(Alignment.Center))
+                    Box(Modifier.fillMaxWidth(frac.coerceAtLeast(0.012f)).align(Alignment.CenterStart)) {
+                        Box(Modifier.align(Alignment.CenterEnd).size(11.dp).clip(CircleShape).background(Color.White))
+                    }
+                }
                 var focusedRecent by remember { mutableStateOf<Channel?>(null) }
                 var controls by remember { mutableStateOf(false) }
                 var controlsUsed by remember { mutableStateOf(false) }
@@ -266,8 +273,8 @@ internal fun PlayerInfoPanel(
                             RoundButton(I.SkipNext, null, size = 38) { onAction("next") }
                         }
                         Row(Modifier.align(Alignment.CenterEnd), verticalAlignment = Alignment.CenterVertically) {
-                            RoundButton(I.LiveTv, null, size = 38) { onAction("live") }
-                            RoundButton(I.FiberManualRecord, null, size = 38) { onAction("record") }
+                            RoundButton(I.LiveTv, "Live", size = 38) { onAction("live") }
+                            RoundButton(I.FiberManualRecord, "Record", size = 38) { onAction("record") }
                         }
                     }
                 }
@@ -295,17 +302,18 @@ internal fun PlayerInfoPanel(
                         onFocused = { focusedRecent = null }) { onAction("history") } }
                     itemsIndexed(recent.take(settings.int("general.recent_count").coerceAtLeast(1))) { i, c ->
                         val p = epg.at(c, now)
-                        TvRow(modifier = Modifier.width(150.dp).height(64.dp)
-                            .then(if (!showGuide && !showHistory && i == 0) Modifier.focusRequester(tilesFocus) else Modifier),
-                            onFocused = { focusedRecent = c }, onClick = { onPlayRecent(c) }) {
-                            Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp)) {
+                        // TiviMate's history box: the channel's logo (or its name when it has none) with what's on under it.
+                        PanelTile(if (!showGuide && !showHistory && i == 0) Modifier.focusRequester(tilesFocus) else Modifier,
+                            onFocused = { focusedRecent = c }, onClick = { onPlayRecent(c) }) { fg ->
+                            Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
                                 // Recent channels › "Show channel names" (otherwise the logo).
-                                if (settings.bool("recent.show_names")) Text(c.name, fontSize = 12.sp, fontWeight = FontWeight.Medium,
-                                    color = rowContentColor(), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                else ChannelLogo(settings, c, 34.dp)
-                                Text(p?.title ?: "No information", fontSize = 11.sp, color = rowContentColor(dimmed = true), maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis)
+                                if (settings.bool("recent.show_names") || c.logo.isNullOrBlank()) Text(c.name, fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold, color = fg, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                                    textAlign = TextAlign.Center, lineHeight = 15.sp)
+                                else ChannelLogo(settings, c, 66.dp)
                             }
+                            Text(p?.title ?: "No information", fontSize = 10.sp, color = fg.copy(alpha = 0.8f), maxLines = 1,
+                                overflow = TextOverflow.Ellipsis)
                         }
                     }
                     if (recent.isNotEmpty()) item { Tile(I.Delete, "Clear", onFocused = { focusedRecent = null }) { onAction("clear_history") } }
@@ -322,12 +330,45 @@ internal fun PlayerInfoPanel(
 
 @Composable
 private fun Tile(icon: ImageVector, label: String, modifier: Modifier = Modifier, onFocused: () -> Unit = {}, onClick: () -> Unit) {
-    TvRow(modifier = modifier.width(96.dp).height(64.dp), onFocused = onFocused, onClick = onClick) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-            Icon(icon, null, tint = rowContentColor(), modifier = Modifier.size(22.dp))
-            Text(label, fontSize = 11.sp, color = rowContentColor(), maxLines = 1, modifier = Modifier.padding(top = 3.dp))
+    PanelTile(modifier, onFocused = onFocused, onClick = onClick) { fg ->
+        Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+            Icon(icon, null, tint = fg, modifier = Modifier.size(28.dp))
         }
+        Text(label, fontSize = 12.sp, fontWeight = FontWeight.Medium, color = fg, maxLines = 1)
     }
+}
+
+/**
+ * One box in the info panel's row (TV guide, History, a recent channel, Clear), TiviMate's look: all the
+ * same size, a soft see-through grey box with rounded corners that turns light when the remote is on it.
+ */
+@Composable
+private fun PanelTile(
+    modifier: Modifier = Modifier,
+    onFocused: () -> Unit = {},
+    onClick: () -> Unit,
+    content: @Composable androidx.compose.foundation.layout.ColumnScope.(fg: Color) -> Unit,
+) {
+    var focused by remember { mutableStateOf(false) }
+    var downSeen by remember { mutableStateOf(false) }
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = modifier
+            .width(118.dp).height(78.dp)
+            .onFocusChanged { focused = it.isFocused; if (it.isFocused) onFocused() }
+            .onPreviewKeyEvent { e ->
+                val ok = e.key == Key.DirectionCenter || e.key == Key.Enter || e.key == Key.NumPadEnter
+                if (!ok) return@onPreviewKeyEvent false
+                if (e.type == KeyEventType.KeyDown && e.nativeKeyEvent.repeatCount == 0) downSeen = true
+                if (e.type == KeyEventType.KeyUp) { if (downSeen) onClick(); downSeen = false }
+                true
+            }
+            .focusable()
+            .pointerInput(Unit) { detectTapGestures { onClick() } }
+            .clip(RoundedCornerShape(7.dp))
+            .background(if (focused) Color.White.copy(alpha = 0.92f) else Color.White.copy(alpha = 0.16f))
+            .padding(horizontal = 7.dp, vertical = 6.dp),
+    ) { content(if (focused) Color(0xFF16181C) else Color.White) }
 }
 
 /**
@@ -518,7 +559,10 @@ internal fun PlayerChannelList(
             // TiviMate: the highlighted channel's programs right next to the list (Right goes into them).
             if (focusedChannel != null && showPrograms) {
                 val upcoming = remember(focusedChannel.id, epg) {
-                    epg.programsFor(focusedChannel).filter { it.end > now }.take(14)
+                    val all = epg.programsFor(focusedChannel)
+                    val n = all.indexOfFirst { it.end > now }
+                    // A few earlier programs, the one on now (highlighted), and what's coming up.
+                    if (n < 0) emptyList() else all.subList(maxOf(0, n - 4), minOf(all.size, n + 10))
                 }
                 Column(Modifier.width(300.dp).fillMaxHeight().background(Color(0xB8101318)).padding(horizontal = 12.dp, vertical = 16.dp)) {
                     Text((focusedChannel.number?.let { "$it  " } ?: "") + focusedChannel.name, fontSize = 15.sp, fontWeight = FontWeight.Bold,
@@ -526,9 +570,15 @@ internal fun PlayerChannelList(
                     Text(focusedChannel.group, fontSize = 12.sp, color = PanelDim, maxLines = 1, modifier = Modifier.padding(bottom = 8.dp))
                     if (upcoming.isEmpty()) Text("No information", fontSize = 13.sp, color = PanelDim)
                     upcoming.forEach { p ->
-                        Row(Modifier.padding(vertical = 5.dp)) {
-                            Text(timeText(p.start, settings, context), fontSize = 13.sp, color = PanelDim, modifier = Modifier.width(76.dp))
-                            Text(p.title, fontSize = 13.sp, color = PanelText, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        val isNow = p.start <= now && p.end > now
+                        val past = p.end <= now
+                        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(4.dp))
+                            .background(if (isNow) Color.White.copy(alpha = 0.14f) else Color.Transparent)
+                            .padding(horizontal = 4.dp, vertical = 5.dp)) {
+                            Text(timeText(p.start, settings, context), fontSize = 13.sp, color = if (isNow) PanelText else PanelDim,
+                                modifier = Modifier.width(76.dp))
+                            Text(p.title, fontSize = 13.sp, fontWeight = if (isNow) FontWeight.Bold else FontWeight.Normal,
+                                color = if (past) PanelDim else PanelText, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }
                 }
