@@ -9,11 +9,13 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Request
 import java.io.File
 import java.text.SimpleDateFormat
@@ -110,9 +112,9 @@ data class Recording(
 )
 
 /**
- * Records live channels to the device (Premium). Downloads the channel's MPEG-TS stream into a file
- * between the program's start and end time. Works for ".ts" streams (Xtream default); HLS channels
- * (".m3u8") can't be recorded this way.
+ * Records live channels to the device (Premium). Downloads the channel's stream into a file between the
+ * program's start and end time, on its own connection (so something else can be watched meanwhile).
+ * Works for ".ts" streams (Xtream default) and for ordinary HLS (".m3u8") channels.
  */
 class RecordingManager(
     private val context: Context,
@@ -194,50 +196,153 @@ class RecordingManager(
         }
     }
 
+    private class CantRecord(message: String) : java.io.IOException(message)
+
     private fun begin(r: Recording) {
         val channel = playlists.channels.value.firstOrNull { it.id == r.channelId }
         if (channel == null) { update(r.id) { it.copy(state = "failed", error = "Channel not found") }; return }
-        if (channel.url.contains(".m3u8", ignoreCase = true)) {
-            update(r.id) { it.copy(state = "failed", error = "This channel uses HLS (.m3u8), which can't be recorded") }; return
-        }
         update(r.id) { it.copy(state = "recording") }
+        // The recording has its own connection to the provider, separate from the picture on screen:
+        // it keeps going while another channel (or a movie) is being watched.
         jobs[r.id] = scope.launch(Dispatchers.IO) {
             var written = 0L
+            var lastSave = System.currentTimeMillis()
+            var problem: String? = null
+            val count: (Int) -> Unit = { n ->
+                written += n
+                if (System.currentTimeMillis() - lastSave > 10_000) {
+                    lastSave = System.currentTimeMillis()
+                    val w = written
+                    update(r.id) { it.copy(bytes = w) }
+                }
+            }
             try {
                 val ua = channel.userAgent?.takeIf { it.isNotBlank() }
                     ?: playlists.userAgentFor(playlists.playlistFor(channel), com.novatv.app.settings.AppSettings(emptyMap()))
-                val req = Request.Builder().url(channel.url).header("User-Agent", ua).build()
-                playlists.http.newBuilder().readTimeout(30, java.util.concurrent.TimeUnit.SECONDS).build()
-                    .newCall(req).execute().use { resp ->
-                        if (!resp.isSuccessful) throw java.io.IOException("Server returned ${resp.code}")
-                        val input = resp.body!!.byteStream()
-                        File(r.path).outputStream().buffered(256 * 1024).use { out ->
-                            val buf = ByteArray(64 * 1024)
-                            var lastSave = System.currentTimeMillis()
-                            while (isActive && System.currentTimeMillis() < r.end) {
-                                val n = input.read(buf)
-                                if (n < 0) break
-                                out.write(buf, 0, n)
-                                written += n
-                                if (System.currentTimeMillis() - lastSave > 10_000) {
-                                    lastSave = System.currentTimeMillis()
-                                    val w = written
-                                    update(r.id) { it.copy(bytes = w) }
+                val client = playlists.http.newBuilder().readTimeout(30, java.util.concurrent.TimeUnit.SECONDS).build()
+                File(r.path).parentFile?.mkdirs()
+                File(r.path).outputStream().buffered(256 * 1024).use { out ->
+                    // If the stream drops, connect again and carry on in the same file (up to 20 tries in a row with nothing received).
+                    var failures = 0
+                    // HLS pieces already saved (kept across reconnects, so nothing is saved twice).
+                    val seen = LinkedHashSet<String>()
+                    while (isActive && System.currentTimeMillis() < r.end && failures < 20) {
+                        val before = written
+                        try {
+                            val req = Request.Builder().url(channel.url).header("User-Agent", ua).build()
+                            client.newCall(req).execute().use { resp ->
+                                if (!resp.isSuccessful) throw java.io.IOException("Server returned ${resp.code}")
+                                val body = resp.body ?: throw java.io.IOException("The server sent nothing")
+                                val type = body.contentType()?.toString().orEmpty().lowercase()
+                                val finalUrl = resp.request.url.toString()
+                                if ("mpegurl" in type || finalUrl.substringBefore('?').endsWith(".m3u8", ignoreCase = true)) {
+                                    // HLS channel: save its pieces one after another as they come out.
+                                    if (recordHls(client, ua, finalUrl, body.string(), r.end, out, seen, count)) failures = 100
+                                } else {
+                                    val input = body.byteStream()
+                                    val buf = ByteArray(64 * 1024)
+                                    while (isActive && System.currentTimeMillis() < r.end) {
+                                        val n = input.read(buf)
+                                        if (n < 0) break
+                                        out.write(buf, 0, n)
+                                        count(n)
+                                    }
                                 }
                             }
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (e: CantRecord) {
+                            problem = e.message; break
+                        } catch (e: Exception) {
+                            problem = e.message
                         }
+                        if (failures >= 100) break // the stream itself ended: all of it is saved
+                        if (written > before) failures = 0 else failures++
+                        if (isActive && System.currentTimeMillis() < r.end) kotlinx.coroutines.delay(2000)
                     }
+                }
                 val w = written
-                update(r.id) { if (it.state == "recording") it.copy(state = "done", bytes = w) else it.copy(bytes = w) }
+                update(r.id) {
+                    when {
+                        it.state != "recording" -> it.copy(bytes = w)
+                        w > 0 -> it.copy(state = "done", bytes = w)
+                        else -> it.copy(state = "failed", bytes = 0, error = problem ?: "Nothing was received from the channel")
+                    }
+                }
             } catch (e: Exception) {
                 val w = written
                 update(r.id) {
                     if (it.state == "stopped") it.copy(bytes = w)
-                    else it.copy(state = if (w > 0) "done" else "failed", bytes = w, error = e.message)
+                    else it.copy(state = if (w > 0) "done" else "failed", bytes = w,
+                        error = if (e is kotlinx.coroutines.CancellationException) null else e.message)
                 }
             } finally {
                 jobs.remove(r.id)
             }
         }
+    }
+
+    /**
+     * Records an HLS channel (.m3u8): reads the channel's list of pieces over and over and appends every
+     * new piece to the file. Works for the usual MPEG-TS pieces; protected or fMP4 channels can't be saved this way.
+     */
+    private suspend fun recordHls(
+        client: okhttp3.OkHttpClient, ua: String, firstUrl: String, firstText: String, end: Long,
+        out: java.io.OutputStream, seen: LinkedHashSet<String>, count: (Int) -> Unit,
+    ): Boolean {
+        fun get(u: String) = client.newCall(Request.Builder().url(u).header("User-Agent", ua).build()).execute()
+        fun resolve(base: String, ref: String) = base.toHttpUrlOrNull()?.resolve(ref)?.toString() ?: ref
+        var url = firstUrl
+        var text = firstText
+        // A list of qualities: take the best one.
+        if (text.contains("#EXT-X-STREAM-INF")) {
+            val lines = text.lines().map { it.trim() }
+            var best: String? = null
+            var bestRate = -1L
+            lines.forEachIndexed { i, l ->
+                if (l.startsWith("#EXT-X-STREAM-INF")) {
+                    val rate = Regex("""BANDWIDTH=(\d+)""").find(l)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
+                    val next = lines.drop(i + 1).firstOrNull { it.isNotEmpty() && !it.startsWith("#") }
+                    if (next != null && rate > bestRate) { bestRate = rate; best = next }
+                }
+            }
+            url = resolve(url, best ?: throw CantRecord("No stream found for this channel"))
+            text = get(url).use { if (!it.isSuccessful) throw java.io.IOException("Server returned ${it.code}"); it.body?.string().orEmpty() }
+        }
+        var first = seen.isEmpty()
+        var idle = 0
+        val buf = ByteArray(64 * 1024)
+        while (currentCoroutineContext().isActive && System.currentTimeMillis() < end) {
+            if (Regex("""#EXT-X-KEY:METHOD=(?!NONE)""").containsMatchIn(text)) throw CantRecord("This channel is protected and can't be recorded")
+            if (text.contains("#EXT-X-MAP")) throw CantRecord("This channel's format can't be recorded")
+            val lines = text.lines().map { it.trim() }
+            val target = Regex("""#EXT-X-TARGETDURATION:(\d+)""").find(text)?.groupValues?.get(1)?.toLongOrNull() ?: 6L
+            val pieces = lines.filter { it.isNotEmpty() && !it.startsWith("#") }.map { resolve(url, it) }
+            // Start at "now": skip what was already in the list, except the last two pieces.
+            if (first) { first = false; if (!text.contains("#EXT-X-ENDLIST")) pieces.dropLast(2).forEach { seen += it.substringBefore('?') } }
+            var got = false
+            for (p in pieces) {
+                if (!currentCoroutineContext().isActive || System.currentTimeMillis() >= end) break
+                if (!seen.add(p.substringBefore('?'))) continue
+                get(p).use { resp ->
+                    if (!resp.isSuccessful) throw java.io.IOException("Server returned ${resp.code}")
+                    val input = resp.body?.byteStream() ?: throw java.io.IOException("The server sent nothing")
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        out.write(buf, 0, n)
+                        count(n)
+                    }
+                }
+                got = true
+            }
+            while (seen.size > 400) seen.remove(seen.first())
+            if (text.contains("#EXT-X-ENDLIST")) return true
+            idle = if (got) 0 else idle + 1
+            if (idle > 20) throw java.io.IOException("The channel stopped sending")
+            kotlinx.coroutines.delay((target * 500).coerceIn(1000, 6000))
+            text = get(url).use { if (!it.isSuccessful) throw java.io.IOException("Server returned ${it.code}"); it.body?.string().orEmpty() }
+        }
+        return false
     }
 }
