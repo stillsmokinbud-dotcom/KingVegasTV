@@ -451,7 +451,7 @@ object SettingsSchema {
                 HeaderItem("player.h_recent", "Recent channels"),
                 ChoiceItem("general.recent_count", "Recent channel count", nums(5, 10, 15, 20, 30), "10"),
                 ChoiceItem("recent.delay", "Delay before adding to recent channels, sec", nums(0, 5, 10, 15, 20, 30, 60), "0"),
-                ToggleItem("recent.show_names", "Show channel names", true),
+                ToggleItem("recent.show_names", "Show channel names", false),
             )),
             SubmenuItem("appearance.player_menu", "Menu",
                 listOf<SettingItem>(ActionItem("player.menu_reorder", "Reorder buttons", SettingAction.REORDER_MENU_BUTTONS)) +
