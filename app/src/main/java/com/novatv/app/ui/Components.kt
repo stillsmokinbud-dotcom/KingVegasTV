@@ -74,6 +74,8 @@ val LocalRowFocused = compositionLocalOf { false }
 val LocalSelectionWhite = compositionLocalOf { true }
 /** Inside a settings side panel: smaller text and rows, like TiviMate's panels. */
 val LocalPanelCompact = compositionLocalOf { false }
+/** The side panel is open over the live picture (from the player's menu): see-through, like TiviMate. */
+val LocalPanelOverVideo = compositionLocalOf { false }
 
 /** Text color for content inside a [TvRow]: dark on the white selection, white otherwise. */
 @Composable
@@ -211,7 +213,7 @@ fun SidePanel(
                 .width(width)
                 .fillMaxHeight()
                 .graphicsLayer { translationX = slide.value * size.width }
-                .background(colors.surfaceVariant)
+                .background(if (LocalPanelOverVideo.current) Color(0xFF3A3D45).copy(alpha = 0.72f) else colors.surfaceVariant)
         ) {
             Box(
                 Modifier.fillMaxWidth().background(Color.White.copy(alpha = 0.07f)).padding(start = 28.dp, end = 20.dp, top = 30.dp, bottom = 18.dp)
