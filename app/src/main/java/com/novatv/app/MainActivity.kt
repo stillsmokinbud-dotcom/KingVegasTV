@@ -325,6 +325,8 @@ private fun AppRoot(settings: AppSettings, onFinish: () -> Unit) {
                 if (stack.getOrNull(stack.lastIndex - 1) == Screen.Home) com.novatv.app.ui.NoFocus {
                     GuideScreen(settings = settings, onPlay = { _, _ -> }, onNavigate = {}, onAddPlaylist = {}, background = true, menuBehind = true)
                 }
+                // Opened from the player's menu: the channel keeps playing full screen behind the panel.
+                else if (stack.getOrNull(stack.lastIndex - 1) is Screen.Player) com.novatv.app.ui.LiveBackdrop()
                 SettingsScreen(settings, screen.page, onClose = ::pop) { action ->
                 when (action) {
                     SettingAction.ADD_PLAYLIST -> push(Screen.AddPlaylist(null))
@@ -361,7 +363,8 @@ private fun AppRoot(settings: AppSettings, onFinish: () -> Unit) {
             is Screen.VodPlayer -> com.novatv.app.ui.VodPlayerScreen(settings, screen.items, screen.titles, screen.start,
                 screen.fromStart, onExit = ::pop)
             is Screen.Player -> PlayerScreen(settings, screen.channelId, onExit = ::pop,
-                onNavigate = { d -> pop(); navigate(d) },
+                // Settings slides in over the picture (the player stays underneath); everything else leaves the player.
+                onNavigate = { d -> if (d == MenuDest.SETTINGS) openSettings() else { pop(); navigate(d) } },
                 onFinishApp = onFinish,
                 canExitToGuide = stack.getOrNull(stack.lastIndex - 1) == Screen.Home)
         }
