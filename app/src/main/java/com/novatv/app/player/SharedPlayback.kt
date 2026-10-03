@@ -77,6 +77,10 @@ class SharedPlayback(private val context: Context, private val http: OkHttpClien
         return channelId == id && p.playbackState != Player.STATE_IDLE && p.playbackState != Player.STATE_ENDED
     }
 
+    /** True once the live picture is actually running (the start-up logo waits for this before it fades away). */
+    val hasPicture: Boolean
+        get() = built?.player?.let { it.playbackState == Player.STATE_READY && it.isPlaying } ?: false
+
     fun markLoaded(id: String) { channelId = id; reconnectAttempts = 0; guard?.cancelPending(); setReconnecting(false) }
 
     private var reconnectAttempts = 0
