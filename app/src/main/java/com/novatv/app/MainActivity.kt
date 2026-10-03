@@ -327,12 +327,14 @@ private fun AppRoot(settings: AppSettings, onFinish: () -> Unit) {
                 }
                 // Opened from the player's menu: the channel keeps playing full screen behind the panel.
                 else if (stack.getOrNull(stack.lastIndex - 1) is Screen.Player) com.novatv.app.ui.LiveBackdrop()
+                CompositionLocalProvider(com.novatv.app.ui.LocalPanelOverVideo provides (stack.getOrNull(stack.lastIndex - 1) is Screen.Player)) {
                 SettingsScreen(settings, screen.page, onClose = ::pop) { action ->
                 when (action) {
                     SettingAction.ADD_PLAYLIST -> push(Screen.AddPlaylist(null))
                     SettingAction.PREMIUM_ACCOUNT -> push(Screen.Premium)
                     SettingAction.GET_PREMIUM -> push(Screen.GetPremium)
                     else -> Unit
+                }
                 }
                 }
             }
