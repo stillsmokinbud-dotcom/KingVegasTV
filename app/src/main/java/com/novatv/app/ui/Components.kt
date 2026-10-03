@@ -160,10 +160,14 @@ fun TvRow(
 @Composable
 fun RowTitle(title: String, summary: String? = null, dim: Boolean = false, modifier: Modifier = Modifier, fitSummary: Boolean = false) {
     val compact = LocalPanelCompact.current
+    // Over the live picture (TiviMate): no box behind the words, so they get a soft shadow to stay readable.
+    val floating = LocalPanelOverVideo.current && !LocalRowFocused.current
     Column(modifier) {
         Text(
             title, fontSize = if (compact) 15.sp else 17.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
             color = rowContentColor(dimmed = dim),
+            fontWeight = if (LocalPanelOverVideo.current) FontWeight.Medium else null,
+            style = floatingStyle(floating),
         )
         if (!summary.isNullOrBlank() && fitSummary) {
             // TiviMate's playlist row: the counts always sit on ONE line (narrow letters, shrunk until they fit).
@@ -173,22 +177,34 @@ fun RowTitle(title: String, summary: String? = null, dim: Boolean = false, modif
             Text(
                 first, fontSize = size.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Clip,
                 fontFamily = CondensedFont, color = rowContentColor(dimmed = true),
+                style = floatingStyle(floating),
                 onTextLayout = { if (it.hasVisualOverflow && size > 8f) size -= 0.5f },
             )
             if (rest.isNotBlank()) {
                 Text(
                     rest, fontSize = if (compact) 12.sp else 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
                     color = rowContentColor(dimmed = true),
+                    style = floatingStyle(floating),
                 )
             }
         } else if (!summary.isNullOrBlank()) {
             Text(
                 summary, fontSize = if (compact) 12.sp else 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
                 color = rowContentColor(dimmed = true),
+                style = floatingStyle(floating),
             )
         }
     }
 }
+
+/** Words drawn straight on the live picture: a soft dark shadow instead of a box behind them. */
+private val FloatingText = androidx.compose.ui.text.TextStyle(
+    shadow = androidx.compose.ui.graphics.Shadow(Color.Black.copy(alpha = 0.75f), androidx.compose.ui.geometry.Offset(0f, 1.5f), 5f)
+)
+
+@Composable
+private fun floatingStyle(on: Boolean): androidx.compose.ui.text.TextStyle =
+    androidx.compose.material3.LocalTextStyle.current.let { if (on) it.merge(FloatingText) else it }
 
 private val CondensedFont = androidx.compose.ui.text.font.FontFamily(
     android.graphics.Typeface.create("sans-serif-condensed", android.graphics.Typeface.NORMAL)
@@ -233,12 +249,15 @@ fun SidePanel(
                 .width(width)
                 .fillMaxHeight()
                 .graphicsLayer { translationX = slide.value * size.width }
-                .background(if (LocalPanelOverVideo.current) Color(0xFF3A3D45).copy(alpha = 0.72f) else colors.surfaceVariant)
+                // Over the live picture: no grey box, only a light tint, so the picture shows through like TiviMate.
+                .background(if (LocalPanelOverVideo.current) Color(0xFF2B2E36).copy(alpha = 0.30f) else colors.surfaceVariant)
         ) {
             Box(
-                Modifier.fillMaxWidth().background(Color.White.copy(alpha = 0.07f)).padding(start = 28.dp, end = 20.dp, top = 30.dp, bottom = 18.dp)
+                Modifier.fillMaxWidth().background(Color.White.copy(alpha = if (LocalPanelOverVideo.current) 0.10f else 0.07f))
+                    .padding(start = 28.dp, end = 20.dp, top = 30.dp, bottom = 18.dp)
             ) {
                 Text(title, fontSize = 21.sp, fontWeight = FontWeight.Medium, color = colors.onSurface,
+                    style = floatingStyle(LocalPanelOverVideo.current),
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             // Keep the remote inside the panel (Left must not jump to the screen behind it).
@@ -255,14 +274,14 @@ fun SidePanel(
 /** Blue section header inside a panel page ("Update options", "Groups"…). */
 @Composable
 fun PanelHeader(text: String) {
-    Text(text, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.primary,
+    Text(text, style = floatingStyle(LocalPanelOverVideo.current), fontSize = 13.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.primary,
         modifier = Modifier.padding(start = 16.dp, top = 14.dp, bottom = 4.dp))
 }
 
 /** Grey help text at the end of a panel page. */
 @Composable
 fun PanelNote(text: String) {
-    Text(text, fontSize = 13.sp, lineHeight = 18.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+    Text(text, style = floatingStyle(LocalPanelOverVideo.current), fontSize = 13.sp, lineHeight = 18.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (LocalPanelOverVideo.current) 0.85f else 0.6f),
         modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 10.dp))
 }
 
