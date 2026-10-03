@@ -536,6 +536,14 @@ private fun LazyListScope.customPage(
                             PanelRow("Playlist name", p.name, modifier = m()) {
                                 editText("Playlist name", p.name) { if (it.isNotBlank()) save(p.copy(name = it)) }
                             }
+                            // Playlists sorting › Manual: put the playlists in your own order (only with more than one playlist).
+                            val order = all.orEmpty()
+                            val at = order.indexOfFirst { it.id == p.id }
+                            if (s.str("playlists.sort") != "name" && order.size > 1) {
+                                val place = "Now ${at + 1} of ${order.size}"
+                                if (at > 0) PanelRow("Move up", place, modifier = m()) { scope.launch { app.playlists.move(p.id, -1) } }
+                                if (at < order.lastIndex) PanelRow("Move down", place, modifier = m()) { scope.launch { app.playlists.move(p.id, 1) } }
+                            }
                             val n = (if (p.useProviderEpg || p.epgUrl.isNotBlank()) 1 else 0)
                             PanelRow("EPG sources", "$n source" + if (n == 1) "" else "s", modifier = m()) {
                                 push(Page.Custom("playlist_epg", "EPG sources (${p.name})", p.id))
