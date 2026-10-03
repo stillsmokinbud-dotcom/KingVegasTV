@@ -620,8 +620,8 @@ internal fun PlayerChannelList(
                             Key.DirectionLeft -> { groupsOpen = true; true }
                             // TiviMate: Right shows the highlighted channel's programs.
                             Key.DirectionRight -> {
-                                // Nothing to show for a channel without a guide: stay on the list.
-                                if (!groupsOpen) focusedChannel?.takeIf { epg.programsFor(it).isNotEmpty() }?.let { infoOnly = false; scheduleFor = it }
+                                // Also for a channel without a guide: its screen then says "No information".
+                                if (!groupsOpen) focusedChannel?.let { infoOnly = false; scheduleFor = it }
                                 true
                             }
                             else -> false
@@ -729,14 +729,23 @@ internal fun PlayerChannelList(
                                 Key.DirectionDown -> { if (infoIdx < progs.lastIndex) infoIdx++; true }
                                 Key.DirectionLeft -> {
                                     anchorIdx = infoIdx; focusedProg = progs.getOrNull(infoIdx)
-                                    backToDays = true; infoOnly = false; true
+                                    backToDays = progs.isNotEmpty(); infoOnly = false; true
                                 }
                                 Key.DirectionRight, Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> true
                                 else -> false
                             }
                         }
                         .focusable()
-                ) { progs.getOrNull(infoIdx)?.let { ProgramCard(settings, it, now) } }
+                ) {
+                    val shown = progs.getOrNull(infoIdx)
+                    if (shown != null) ProgramCard(settings, shown, now)
+                    else Column(Modifier.padding(16.dp).width(380.dp).clip(RoundedCornerShape(8.dp)).background(CardGlass).padding(14.dp)) {
+                        // A channel without a guide still gets its box.
+                        Text((ch.number?.let { "$it  " } ?: "") + ch.name, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = PanelText,
+                            maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text("No information", fontSize = 13.sp, color = PanelDim, modifier = Modifier.padding(top = 5.dp))
+                    }
+                }
                 LaunchedEffect(Unit) { repeat(20) { if (runCatching { infoFocus.requestFocus() }.isSuccess) return@LaunchedEffect; delay(30) } }
             } else {
             // TiviMate: the channel on top, its programs by time with the days in a column on the right.
@@ -749,7 +758,24 @@ internal fun PlayerChannelList(
                         Text(ch.group, fontSize = 12.sp, color = PanelDim, maxLines = 1)
                     }
                 }
-                if (progs.isEmpty()) Text("No information", fontSize = 14.sp, color = PanelDim, modifier = Modifier.padding(8.dp))
+                // No guide for this channel: one row that still takes the remote, so Left, Right and Back keep working.
+                if (progs.isEmpty()) Box(Modifier.onPreviewKeyEvent { e ->
+                    if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                    when (e.key) {
+                        Key.DirectionLeft -> { infoOnly = false; scheduleFor = null; true }
+                        Key.DirectionRight -> { infoOnly = true; true }
+                        Key.DirectionUp, Key.DirectionDown -> true
+                        else -> false
+                    }
+                }) {
+                    TvRow(
+                        modifier = Modifier.focusRequester(schedFocus),
+                        onClick = {
+                            val idx = list.indexOf(ch)
+                            if (idx >= 0) onPick(list, idx, stay) else onPick(listOf(ch), 0, stay)
+                        },
+                    ) { Text("No information", fontSize = 14.sp, color = rowContentColor()) }
+                }
                 val dayFmt = remember { java.text.SimpleDateFormat("EEE,\nMMM d", java.util.Locale.getDefault()) }
                 Row(Modifier.weight(1f)) {
                 LazyColumn(
@@ -863,6 +889,9 @@ internal fun PlayerChannelList(
             LaunchedEffect(ch.id) { repeat(20) { if (runCatching { schedFocus.requestFocus() }.isSuccess) return@LaunchedEffect; delay(30) } }
             // Left on the information: back to the days, on the day of the program that was showing.
             LaunchedEffect(infoOnly) {
+                // Back from the information of a channel without a guide: onto its "No information" row.
+                if (!infoOnly && progs.isEmpty())
+                    repeat(20) { if (runCatching { schedFocus.requestFocus() }.isSuccess) return@LaunchedEffect; delay(30) }
                 if (!infoOnly && backToDays) {
                     backToDays = false
                     val d = progs.getOrNull(infoIdx)?.let { dayKey(it.start) } ?: dayKey(now)
