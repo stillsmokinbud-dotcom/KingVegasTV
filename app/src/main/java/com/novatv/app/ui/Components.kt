@@ -158,14 +158,30 @@ fun TvRow(
 }
 
 @Composable
-fun RowTitle(title: String, summary: String? = null, dim: Boolean = false, modifier: Modifier = Modifier) {
+fun RowTitle(title: String, summary: String? = null, dim: Boolean = false, modifier: Modifier = Modifier, fitSummary: Boolean = false) {
     val compact = LocalPanelCompact.current
     Column(modifier) {
         Text(
             title, fontSize = if (compact) 15.sp else 17.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
             color = rowContentColor(dimmed = dim),
         )
-        if (!summary.isNullOrBlank()) {
+        if (!summary.isNullOrBlank() && fitSummary) {
+            // TiviMate's playlist row: the counts always sit on ONE line (narrow letters, shrunk until they fit).
+            val first = summary.substringBefore('\n')
+            val rest = summary.substringAfter('\n', "")
+            var size by remember(first) { mutableStateOf(if (compact) 12f else 13f) }
+            Text(
+                first, fontSize = size.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Clip,
+                fontFamily = CondensedFont, color = rowContentColor(dimmed = true),
+                onTextLayout = { if (it.hasVisualOverflow && size > 8f) size -= 0.5f },
+            )
+            if (rest.isNotBlank()) {
+                Text(
+                    rest, fontSize = if (compact) 12.sp else 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                    color = rowContentColor(dimmed = true),
+                )
+            }
+        } else if (!summary.isNullOrBlank()) {
             Text(
                 summary, fontSize = if (compact) 12.sp else 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
                 color = rowContentColor(dimmed = true),
@@ -173,6 +189,10 @@ fun RowTitle(title: String, summary: String? = null, dim: Boolean = false, modif
         }
     }
 }
+
+private val CondensedFont = androidx.compose.ui.text.font.FontFamily(
+    android.graphics.Typeface.create("sans-serif-condensed", android.graphics.Typeface.NORMAL)
+)
 
 // ------------------------------------------------------------------ TiviMate settings panel
 
@@ -286,12 +306,14 @@ fun PanelRow(
     leading: (@Composable () -> Unit)? = null,
     onFocused: (() -> Unit)? = null,
     onLongClick: (() -> Unit)? = null,
+    /** True = the first line of [value] is kept on one line (shrunk to fit), like TiviMate's playlist counts. */
+    fitValue: Boolean = false,
     onClick: () -> Unit,
 ) {
     TvRow(modifier = modifier, onFocused = onFocused, onLongClick = onLongClick, onClick = onClick) {
         if (radio != null) { TvRadio(radio); Spacer(Modifier.width(16.dp)) }
-        if (leading != null) { leading(); Spacer(Modifier.width(14.dp)) }
-        RowTitle(title, value, dim = locked, modifier = Modifier.weight(1f))
+        if (leading != null) { leading(); Spacer(Modifier.width(if (fitValue) 10.dp else 14.dp)) }
+        RowTitle(title, value, dim = locked, modifier = Modifier.weight(1f), fitSummary = fitValue)
         if (locked) { Spacer(Modifier.width(8.dp)); Badge("PREMIUM") }
         if (switch != null) { Spacer(Modifier.width(12.dp)); TvSwitch(switch) }
     }
