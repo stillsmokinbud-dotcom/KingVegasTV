@@ -489,11 +489,22 @@ internal fun PlayerChannelList(
     val focusList: () -> Unit = {
         scope.launch { repeat(20) { if (runCatching { listFocus.requestFocus() }.isSuccess) return@launch; delay(30) } }
     }
-    BackHandler {
-        if (!groupsOpen) onDismiss()
-        else if (list.isEmpty()) onDismiss()
-        else { groupsOpen = false; focusList() }
+    // True while only the program information box is showing (the last step to the right).
+    var infoOnly by remember { mutableStateOf(false) }
+    // One Back, the same on every one of these screens:
+    // information box → close everything; programs/days → channel list; groups → channel list; channel list → close.
+    val goBack: () -> Unit = {
+        when {
+            scheduleFor != null && infoOnly -> { onDismiss() }
+            scheduleFor != null -> { scheduleFor = null }
+            groupsOpen && list.isNotEmpty() -> { groupsOpen = false; focusList() }
+            else -> { onDismiss() }
+        }
     }
+    // Only reached when nothing in the list holds the remote; normally the key handler below takes Back.
+    BackHandler { goBack() }
+    var backDown by remember { mutableStateOf(false) }
+    var backLong by remember { mutableStateOf(false) }
     val state = rememberLazyListState(initialFirstVisibleItemIndex = (current - 4).coerceAtLeast(0))
     val groups by produceState(emptyList<String>(), allChannels) {
         value = withContext(Dispatchers.Default) { allChannels.map { it.group }.distinct() }
@@ -540,9 +551,21 @@ internal fun PlayerChannelList(
     }
 
     Row(Modifier.fillMaxSize()
+        // Back is handled right here, before anything else can swallow the press
+        // (otherwise the system treats Back as "leave this box" and nothing happens).
         // Hold Back: close the list straight back to full screen (TiviMate).
         .onPreviewKeyEvent { e ->
-            if (e.key == Key.Back && e.type == KeyEventType.KeyDown && e.nativeKeyEvent.repeatCount > 0) { onDismiss(); true } else false
+            if (e.key != Key.Back) return@onPreviewKeyEvent false
+            if (e.type == KeyEventType.KeyDown) {
+                if (e.nativeKeyEvent.repeatCount == 0) { backDown = true; backLong = false }
+                else if (backDown && !backLong) { backLong = true; onDismiss() }
+                true
+            } else if (e.type == KeyEventType.KeyUp) {
+                val mine = backDown
+                if (backDown && !backLong) goBack()
+                backDown = false; backLong = false
+                mine
+            } else false
         }
         .focusProperties { exit = { FocusRequester.Cancel } }.focusGroup()) {
         androidx.compose.animation.AnimatedVisibility(
@@ -598,7 +621,7 @@ internal fun PlayerChannelList(
                             // TiviMate: Right shows the highlighted channel's programs.
                             Key.DirectionRight -> {
                                 // Nothing to show for a channel without a guide: stay on the list.
-                                if (!groupsOpen) focusedChannel?.takeIf { epg.programsFor(it).isNotEmpty() }?.let { scheduleFor = it }
+                                if (!groupsOpen) focusedChannel?.takeIf { epg.programsFor(it).isNotEmpty() }?.let { infoOnly = false; scheduleFor = it }
                                 true
                             }
                             else -> false
@@ -690,14 +713,11 @@ internal fun PlayerChannelList(
             val dayReq = remember(progs) { days.associateWith { FocusRequester() } }
             var dayAt by remember(ch.id) { mutableIntStateOf(dayKey(now)) }
             // TiviMate: programs → days → only the program's information (Up/Down walks through the programs).
-            var infoOnly by remember(ch.id) { mutableStateOf(false) }
             var infoIdx by remember(ch.id) { mutableIntStateOf(nowIdx) }
             var backToDays by remember(ch.id) { mutableStateOf(false) }
             val focusDay: (Int) -> Unit = { d ->
                 scope.launch { repeat(20) { if (runCatching { dayReq[d]?.requestFocus() }.isSuccess) return@launch; delay(30) } }
             }
-            BackHandler { scheduleFor = null }
-            BackHandler(enabled = infoOnly) { onDismiss() }
             if (infoOnly) {
                 Spacer(Modifier.width(540.dp))
                 Box(
@@ -737,7 +757,7 @@ internal fun PlayerChannelList(
                     modifier = Modifier.weight(1f).onPreviewKeyEvent { e ->
                         if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                         when (e.key) {
-                            Key.DirectionLeft -> { scheduleFor = null; true }
+                            Key.DirectionLeft -> { infoOnly = false; scheduleFor = null; true }
                             // Right: over to the days.
                             Key.DirectionRight -> {
                                 val d = focusedProg?.let { dayKey(it.start) } ?: dayKey(now)
@@ -815,9 +835,9 @@ internal fun PlayerChannelList(
                                 if (progs.isNotEmpty()) infoOnly = true
                                 true
                             }
-                            // Stay inside the day column at its ends.
-                            Key.DirectionUp -> dayAt == days.firstOrNull()
-                            Key.DirectionDown -> dayAt == days.lastOrNull()
+                            // Up/Down: the day above/below (never out of the day column).
+                            Key.DirectionUp -> { days.getOrNull(days.indexOf(dayAt) - 1)?.let { focusDay(it) }; true }
+                            Key.DirectionDown -> { days.getOrNull(days.indexOf(dayAt) + 1)?.let { focusDay(it) }; true }
                             else -> false
                         }
                     },
