@@ -14,6 +14,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
@@ -103,4 +104,21 @@ fun SharedVideoLayer(settings: AppSettings) {
             .offset { if (hidden) IntOffset(-(r.width.roundToInt() + 200), 0) else IntOffset(r.left.roundToInt(), r.top.roundToInt()) }
             .size(with(d) { r.width.coerceAtLeast(2f).toDp() }, with(d) { r.height.coerceAtLeast(2f).toDp() }),
     )
+}
+
+/**
+ * Keeps the live channel playing full screen underneath a screen that is drawn over it
+ * (TiviMate: Settings opened from the player's menu slides in over the picture).
+ */
+@Composable
+fun LiveBackdrop() {
+    val app = LocalContext.current.app
+    val d = LocalDensity.current
+    val cfg = androidx.compose.ui.platform.LocalConfiguration.current
+    val full = with(d) { Rect(0f, 0f, cfg.screenWidthDp.dp.toPx(), cfg.screenHeightDp.dp.toPx()) }
+    DisposableEffect(Unit) {
+        app.shared.attach()
+        val token = VideoStage.claim(full)
+        onDispose { VideoStage.release(token); app.shared.detach() }
+    }
 }
