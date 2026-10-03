@@ -300,8 +300,13 @@ fun SettingsScreen(
 
     editing?.let { item ->
         TextDialog(item.title, settings.str(item.key), item.secret, item.numeric, item.note, { editing = null }) {
-            scope.launch { repo.set(item.key, it) }
-            editing = null
+            // A PIN the lock screen can't accept (not 4 to 8 digits) would lock Settings for good.
+            if (item.key == "parental.pin" && !(it.length in 4..8 && it.all { ch -> ch.isDigit() })) {
+                android.widget.Toast.makeText(context, "The PIN must be 4 to 8 digits", android.widget.Toast.LENGTH_LONG).show()
+            } else {
+                scope.launch { repo.set(item.key, it) }
+                editing = null
+            }
         }
     }
     textEdit?.let { (title, value, done) ->
