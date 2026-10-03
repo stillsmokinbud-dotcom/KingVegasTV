@@ -217,7 +217,7 @@ private fun MultiviewTile(settings: AppSettings, channel: Channel, muted: Boolea
     DisposableEffect(key) { onDispose { PlayerFactory.forget(built.player); built.player.release() } }
     LaunchedEffect(key) {
         built.dataSource.setUserAgent(channel.userAgent ?: repo.userAgentFor(repo.playlistFor(channel), settings))
-        built.player.setMediaItem(PlayerFactory.mediaItem(channel.url))
+        built.player.setMediaItem(PlayerFactory.mediaItem(PlayerFactory.viaUdpProxy(channel.url, settings)))
         built.player.prepare()
         built.player.playWhenReady = true
     }
