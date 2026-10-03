@@ -74,7 +74,11 @@ fun SharedVideoLayer(settings: AppSettings) {
             }
         }
         built.player.addListener(l)
-        onDispose { built.player.removeListener(l) }
+        onDispose {
+            built.player.removeListener(l)
+            // The old player is gone: don't leave the screen forced awake on its behalf.
+            if (!VideoStage.keepScreenOn.value) window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
     }
     val rect by VideoStage.rect
     var last by remember { mutableStateOf<Rect?>(null) }
