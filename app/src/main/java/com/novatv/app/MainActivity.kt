@@ -368,11 +368,14 @@ private fun AppRoot(settings: AppSettings, onFinish: () -> Unit) {
             }
             is Screen.VodPlayer -> com.novatv.app.ui.VodPlayerScreen(settings, screen.items, screen.titles, screen.start,
                 screen.fromStart, onExit = ::pop)
-            is Screen.Player -> PlayerScreen(settings, screen.channelId, onExit = ::pop,
+            // A fresh player for each entry (a player opened on top of another one starts on its own channel).
+            is Screen.Player -> androidx.compose.runtime.key(stack.lastIndex, screen.channelId) {
+                PlayerScreen(settings, screen.channelId, onExit = ::pop,
                 // Settings slides in over the picture (the player stays underneath); everything else leaves the player.
                 onNavigate = { d -> if (d == MenuDest.SETTINGS) openSettings() else { pop(); navigate(d) } },
                 onFinishApp = onFinish,
                 canExitToGuide = stack.getOrNull(stack.lastIndex - 1) == Screen.Home)
+            }
         }
     }
 
@@ -384,6 +387,12 @@ private fun AppRoot(settings: AppSettings, onFinish: () -> Unit) {
             timeoutSec = settings.int("reminders.popup_timeout"), defaultAction = settings.str("reminders.default_action"), onWatch = {
             dueReminder = null
             app.playlists.channels.value.firstOrNull { it.id == r.channelId }?.let { ch ->
+                // Watching something already: remember the channel that's actually on, so Back comes back to it.
+                val top = stack.last()
+                if (top is Screen.Player) {
+                    val on = com.novatv.app.ui.PlayerResume.at?.takeIf { com.novatv.app.ui.PlayerResume.from == top.channelId }
+                    if (on != null) stack[stack.lastIndex] = Screen.Player(on)
+                }
                 app.playQueue = app.playlists.channels.value
                 push(Screen.Player(ch.id))
             }
