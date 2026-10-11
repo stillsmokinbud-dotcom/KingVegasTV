@@ -225,6 +225,18 @@ fun GuideScreen(
 
     // Dialog state
     var menuFor by remember { mutableStateOf<Pair<Channel, ChannelGroup>?>(null) }
+    // Channel organization dialogs (rename, pick / name one of your own categories).
+    var renameFor by remember { mutableStateOf<Channel?>(null) }
+    var groupPickFor by remember { mutableStateOf<Channel?>(null) }
+    var newGroupFor by remember { mutableStateOf<Channel?>(null) }
+    // After a category is made, stay on the group you were looking at (the list of groups shifts by one).
+    var keepGroup by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(groups, keepGroup) {
+        val name = keepGroup ?: return@LaunchedEffect
+        val at = groups.indexOfFirst { it.name == name }
+        if (at >= 0 && at != groupIndex) groupIndex = at
+    }
+    LaunchedEffect(keepGroup) { if (keepGroup != null) { delay(3000); keepGroup = null } }
     var programFor by remember { mutableStateOf<Triple<Channel, ChannelGroup, GuideCell>?>(null) }
     var pinFor by remember { mutableStateOf<(() -> Unit)?>(null) }
     var info by remember { mutableStateOf<Pair<String, String>?>(null) }
@@ -742,6 +754,11 @@ fun GuideScreen(
     menuFor?.let { (c, g) ->
         val isFav = c.id in favorites
         val parental = settings.premium && settings.bool("parental.enabled")
+        val hiddenChannels = com.novatv.app.playlist.ChannelEdits.hidden(settings)
+        val inCustom = com.novatv.app.playlist.ChannelEdits.customGroups(settings).any { it.first == g.name }
+        // Moving works in Favorites, your own categories, and provider groups while sorting follows the playlist.
+        val canMove = g.channels.size > 1 && g.name != "All channels" && g.name != "All playlists" && g.name != "Recently watched" &&
+            (g.name == "Favorites" || inCustom || settings.effective("channels.sort") == "playlist")
         val options = buildList {
             add("play" to "Play")
             add("fav" to if (isFav) "Remove from favorites" else "Add to favorites")
@@ -749,16 +766,41 @@ fun GuideScreen(
             add("update" to "Update playlist")
             add("epg" to "Update TV guide")
             if (parental) add("lock" to if (c.group in locked) "Unlock group \"${c.group}\"" else "Lock group \"${c.group}\"")
+            // Channel organization (TiviMate Premium): rename, hide, move, your own categories.
+            add("rename" to "Rename channel")
+            add("hide_ch" to if (c.id in hiddenChannels) "Show channel" else "Hide channel")
+            if (canMove) { add("up" to "Move up"); add("down" to "Move down") }
+            add("add_group" to "Add to my category")
+            if (inCustom) {
+                add("remove_group" to "Remove from \"${g.name}\"")
+                add("delete_group" to "Delete category \"${g.name}\"")
+            }
         }
         ChoiceDialog(c.name, options, null, { menuFor = null }) { choice ->
             menuFor = null
-            val premiumOnly = mapOf("fav" to "Favorites", "hide" to "Hiding groups", "lock" to "Parental control")
+            val premiumOnly = mapOf("fav" to "Favorites", "hide" to "Hiding groups", "lock" to "Parental control",
+                "rename" to "Channel organization", "hide_ch" to "Channel organization", "up" to "Channel organization",
+                "down" to "Channel organization", "add_group" to "Custom categories", "remove_group" to "Custom categories",
+                "delete_group" to "Custom categories")
             if (choice in premiumOnly && !settings.premium) { paywall = premiumOnly[choice]; return@ChoiceDialog }
             when (choice) {
                 "play" -> open(g, c)
                 "fav" -> scope.launch { app.settings.toggleInList(DataKeys.FAVORITES, c.id) }
                 "hide" -> scope.launch { app.settings.toggleInList(DataKeys.HIDDEN_GROUPS, c.group); groupIndex = 0; row = 0 }
                 "lock" -> scope.launch { app.settings.toggleInList(DataKeys.LOCKED_GROUPS, c.group) }
+                "rename" -> renameFor = c
+                "hide_ch" -> scope.launch { com.novatv.app.playlist.ChannelEdits.toggleHidden(app.settings, c.id) }
+                "up", "down" -> {
+                    val by = if (choice == "up") -1 else 1
+                    val ids = g.channels.map { it.id }
+                    val at = ids.indexOf(c.id)
+                    // The remote stays on the channel that moved.
+                    if (at + by in ids.indices) row = at + by
+                    scope.launch { com.novatv.app.playlist.ChannelEdits.move(app.settings, g.name, ids, c.id, by) }
+                }
+                "add_group" -> groupPickFor = c
+                "remove_group" -> scope.launch { com.novatv.app.playlist.ChannelEdits.removeFromGroup(app.settings, g.name, c.id) }
+                "delete_group" -> scope.launch { com.novatv.app.playlist.ChannelEdits.deleteGroup(app.settings, g.name); groupIndex = 0; row = 0 }
                 "update" -> scope.launch { info = updateResultMessage(repo.refresh(c.playlistId)) }
                 "epg" -> scope.launch {
                     val r = app.epg.update()
@@ -779,12 +821,17 @@ fun GuideScreen(
             else {
                 add("remind" to if (app.reminders.has(c.id, cell.start)) "Cancel reminder" else "Remind me")
                 add("rec" to "Record")
+                // Recurring recordings: the same time slot again and again.
+                add("rec_daily" to "Record every day at this time")
+                add("rec_weekdays" to "Record every weekday (Mon–Fri) at this time")
+                add("rec_weekly" to "Record every week at this time")
             }
             add("live" to "Watch channel live")
         }
         ChoiceDialog("${cell.title} · ${timeText(cell.start, settings, context)}", options, null, { programFor = null }) { choice ->
             programFor = null
-            val premiumOnly = mapOf("cu" to "Catch-up", "remind" to "Reminders", "rec" to "Recording")
+            val premiumOnly = mapOf("cu" to "Catch-up", "remind" to "Reminders", "rec" to "Recording",
+                "rec_daily" to "Recording", "rec_weekdays" to "Recording", "rec_weekly" to "Recording")
             if (choice in premiumOnly && !settings.premium) { paywall = premiumOnly[choice]; return@ChoiceDialog }
             when (choice) {
                 "live" -> open(g, c)
@@ -803,7 +850,46 @@ fun GuideScreen(
                     info = "Recording scheduled" to "${cell.title} on ${c.name} will be recorded while KINGVEGAS TV is running. " +
                         "Find it under Recordings in the menu."
                 }
+                "rec_daily", "rec_weekdays", "rec_weekly" -> {
+                    val repeat = choice.removePrefix("rec_")
+                    app.recordings.schedule(c, cell.title, cell.start, cell.end, repeat)
+                    val how = when (repeat) { "daily" -> "every day"; "weekdays" -> "every weekday"; else -> "every week" }
+                    info = "Recording scheduled" to "${c.name} will be recorded $how at ${timeText(cell.start, settings, context)} " +
+                        "while KINGVEGAS TV is running. Stop it under Recordings in the menu (Stop repeating)."
+                }
                 else -> Unit
+            }
+        }
+    }
+    renameFor?.let { c ->
+        TextDialog("Rename channel", c.name, hint = "Leave it empty to use the playlist's own name", onDismiss = { renameFor = null }) { name ->
+            renameFor = null
+            scope.launch { com.novatv.app.playlist.ChannelEdits.rename(app.settings, c.id, name) }
+        }
+    }
+    groupPickFor?.let { c ->
+        val mine = com.novatv.app.playlist.ChannelEdits.customGroups(settings).map { it.first }
+        ChoiceDialog("Add \"${c.name}\" to", mine.map { it to it } + ("\u0000new" to "New category…"), null, { groupPickFor = null }) { pick ->
+            groupPickFor = null
+            if (pick == "\u0000new") newGroupFor = c
+            else scope.launch {
+                keepGroup = groups.getOrNull(groupIndex)?.name
+                com.novatv.app.playlist.ChannelEdits.addToGroup(app.settings, pick, c.id)
+                info = "Added" to "${c.name} is now in \"$pick\"."
+            }
+        }
+    }
+    newGroupFor?.let { c ->
+        TextDialog("New category name", "", onDismiss = { newGroupFor = null }) { name ->
+            newGroupFor = null
+            val mine = com.novatv.app.playlist.ChannelEdits.customGroups(settings).map { it.first }
+            val taken = name.trim() !in mine && (name.trim() in setOf("Favorites", "All channels", "All playlists", "Recently watched") ||
+                groups.any { it.name.equals(name.trim(), ignoreCase = true) })
+            if (taken) info = "Name already used" to "There is already a category called \"${name.trim()}\". Pick another name."
+            else if (name.isNotBlank()) scope.launch {
+                keepGroup = groups.getOrNull(groupIndex)?.name
+                com.novatv.app.playlist.ChannelEdits.addToGroup(app.settings, name, c.id)
+                info = "Category made" to "\"${name.trim()}\" now has ${c.name}. It shows in the category list."
             }
         }
     }
