@@ -89,7 +89,9 @@ fun RecordingsScreen() {
             items(items.sortedByDescending { it.start }, key = { it.id }) { r ->
                 val status = when (r.state) {
                     "recording" -> "● Recording now · ${sizeText(r.bytes)}"
-                    "scheduled" -> "Scheduled · ${whenText(r.start)}"
+                    "scheduled" -> "Scheduled · ${whenText(r.start)}" + when (r.repeat) {
+                        "daily" -> " · repeats every day"; "weekdays" -> " · repeats every weekday"; "weekly" -> " · repeats every week"; else -> ""
+                    }
                     "done" -> "${whenText(r.start)} · ${sizeText(r.bytes)}"
                     "stopped" -> "Stopped · ${sizeText(r.bytes)}"
                     else -> "Failed · ${r.error ?: ""}"
@@ -107,6 +109,7 @@ fun RecordingsScreen() {
         val opts = buildList {
             if (r.bytes > 0) add("play" to "Play")
             if (r.state == "recording" || r.state == "scheduled") add("stop" to "Stop")
+            if (r.repeat.isNotEmpty()) add("stop_repeat" to "Stop repeating")
             add("delete" to "Delete")
         }
         ChoiceDialog(r.title, opts, null, { menuFor = null }) { c ->
@@ -114,6 +117,7 @@ fun RecordingsScreen() {
             when (c) {
                 "play" -> play(r.title, android.net.Uri.fromFile(java.io.File(r.path)).toString())
                 "stop" -> rec.stop(r.id)
+                "stop_repeat" -> rec.stopRepeating(r.series)
                 "delete" -> rec.delete(r.id)
             }
         }
