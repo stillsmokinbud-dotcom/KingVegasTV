@@ -589,6 +589,21 @@ fun SeriesScreen(item: VodItem, onPlay: (List<Episode>, Int) -> Unit) {
  * Full-screen player for movies and episodes: seek bar, pause, resume position, next episode.
  * OK shows the controls; Left/Right seek; Back saves the position and exits.
  */
+/**
+ * The User-Agent for a movie, episode or catch-up address: the one set on the channel or playlist that comes
+ * from the same server, otherwise the one in Settings › Playback.
+ */
+internal suspend fun vodUserAgent(repo: com.novatv.app.playlist.PlaylistRepository, url: String, s: AppSettings): String {
+    fun hostOf(u: String) = u.substringAfter("://", "").substringBefore('/').substringBefore('?').substringAfterLast('@')
+        .substringBefore(':').lowercase()
+    val host = hostOf(url)
+    if (host.isBlank()) return repo.userAgentFor(null, s)
+    val ch = repo.channels.value.firstOrNull { hostOf(it.url) == host }
+    ch?.userAgent?.takeIf { it.isNotBlank() }?.let { return it }
+    val pl = ch?.let { repo.playlistFor(it) } ?: repo.readPlaylists().firstOrNull { hostOf(it.url) == host }
+    return repo.userAgentFor(pl, s)
+}
+
 @Composable
 fun VodPlayerScreen(
     settings: AppSettings,
@@ -620,6 +635,10 @@ fun VodPlayerScreen(
         // Settings › Playback › Use external player (For VOD / For TV and VOD)
         if (!catchup && com.novatv.app.player.ExternalPlayer.wanted(settings, vod = true) &&
             com.novatv.app.player.ExternalPlayer.open(context, url, titles.getOrElse(index) { "" })) { onExit(); return@LaunchedEffect }
+        // Same User-Agent as that provider's live channels (some servers refuse anything else).
+        built.dataSource.setUserAgent(kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            vodUserAgent(app.playlists, url, settings)
+        })
         player.setMediaItem(androidx.media3.common.MediaItem.fromUri(url))
         player.prepare()
         val pos = if (fromStart && index == start) 0L else app.vod.resumePosition(key)
