@@ -38,6 +38,8 @@ class SharedPlayback(private val context: Context, private val http: OkHttpClien
     var onReconnectChanged: ((Boolean) -> Unit)? = null
 
     private var builtWith: String? = null
+    /** Seconds of loading before the guard starts the channel over. */
+    private var bufferLimitS = 10
     private var guard: Guard? = null
 
     /**
@@ -56,6 +58,7 @@ class SharedPlayback(private val context: Context, private val http: OkHttpClien
             built = null; channelId = null
         }
         builtWith = sig
+        bufferLimitS = if (settings.str("playback.buffer") == "xlarge") 14 else 10
         return PlayerFactory(context, http).create(settings, DEFAULT_USER_AGENT).also { b ->
             built = b
             guard = Guard(b.player).also { it.start() }
@@ -76,6 +79,10 @@ class SharedPlayback(private val context: Context, private val http: OkHttpClien
         val p = built?.player ?: return false
         return channelId == id && p.playbackState != Player.STATE_IDLE && p.playbackState != Player.STATE_ENDED
     }
+
+    /** True while something is loading or playing (the start-up logo only waits for a picture that is on its way). */
+    val busy: Boolean
+        get() = built?.player?.let { it.playbackState == Player.STATE_BUFFERING || it.playbackState == Player.STATE_READY } ?: false
 
     /** True once the live picture is actually running (the start-up logo waits for this before it fades away). */
     val hasPicture: Boolean
@@ -125,7 +132,7 @@ class SharedPlayback(private val context: Context, private val http: OkHttpClien
         /** A new channel started (or the user paused/stopped): forget any reconnect still waiting. */
         fun cancelPending() { pending?.let { main.removeCallbacks(it) }; pending = null }
 
-        private fun reset() { bufferingFor = 0; stuckFor = 0; lastFrames = -1; lastPos = -1L }
+        private fun reset() { bufferingFor = 0; stuckFor = 0; lastFrames = -1; lastPos = -1L; playingFor = 0 }
 
         private fun reconnect(delayMs: Long) {
             reset()
@@ -176,7 +183,8 @@ class SharedPlayback(private val context: Context, private val http: OkHttpClien
             when (p.playbackState) {
                 Player.STATE_BUFFERING -> {
                     stuckFor = 0
-                    if (++bufferingFor >= 10) reconnect(0) // loading for 10 s: start over at the live point
+                    // Loading too long: start over at the live point (longer allowance for big buffers / long timeouts).
+                    if (++bufferingFor >= bufferLimitS) reconnect(0)
                 }
                 Player.STATE_READY -> {
                     bufferingFor = 0
