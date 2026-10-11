@@ -537,6 +537,9 @@ internal fun PlayerChannelList(
         value = withContext(Dispatchers.Default) { allChannels.map { it.group }.distinct() }
     }
     val playingId = queue.getOrNull(current)?.id
+    // Your own categories (Channel organization) are in the groups list as well.
+    val customs = remember(settings) { com.novatv.app.playlist.ChannelEdits.customGroups(settings) }
+    val customNames = customs.map { it.first }
     // TiviMate: moving through the groups shows that group's channels right away (no OK needed).
     var hoverGroup by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(hoverGroup) {
@@ -547,9 +550,16 @@ internal fun PlayerChannelList(
         if (!groupsOpen) return@LaunchedEffect
         val chosen = withContext(Dispatchers.Default) {
             when (g) {
-                "Favorites" -> allChannels.filter { it.id in favorites }
+                "Favorites" -> allChannels.associateBy { it.id }.let { byId -> favorites.mapNotNull { byId[it] } }
                 "All channels" -> allChannels
-                else -> allChannels.filter { it.group == g }
+                in customNames -> {
+                    val byId = allChannels.associateBy { it.id }
+                    customs.first { it.first == g }.second.mapNotNull { byId[it] }
+                }
+                else -> allChannels.filter { it.group == g }.let { l ->
+                    // Channels moved by hand keep that order here too.
+                    if (settings.effective("channels.sort") == "playlist") com.novatv.app.playlist.ChannelEdits.ordered(g, l, settings) else l
+                }
             }
         }
         val at = chosen.indexOfFirst { it.id == playingId }.coerceAtLeast(0)
@@ -603,7 +613,7 @@ internal fun PlayerChannelList(
             enter = androidx.compose.animation.expandHorizontally(tween(180)) + androidx.compose.animation.fadeIn(tween(150)),
             exit = androidx.compose.animation.shrinkHorizontally(tween(150)) + androidx.compose.animation.fadeOut(tween(120)),
         ) {
-            val names = listOf("Favorites", "All channels") + groups
+            val names = listOf("Favorites", "All channels") + customNames + groups
             // The group the list is showing when this opens keeps the focus handle (it must not move while browsing).
             val anchor = remember { title }
             val groupState = rememberLazyListState(initialFirstVisibleItemIndex = (names.indexOf(anchor) - 5).coerceAtLeast(0))
