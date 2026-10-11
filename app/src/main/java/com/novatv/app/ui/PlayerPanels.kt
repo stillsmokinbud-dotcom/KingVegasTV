@@ -145,9 +145,10 @@ private fun RoundButton(
 /** The word LIVE in a small outlined box (TiviMate's "Live" button and the mark on the program that is on now). */
 @Composable
 private fun LiveBadge(tint: Color, scale: Float = 1f) {
+    // Sized by its word (with a little room), so a bigger TV font can't push it out of the box.
     Box(
-        Modifier.size(width = (27 * scale).dp, height = (16 * scale).dp)
-            .border((1.5f * scale).dp, tint, RoundedCornerShape((2.5f * scale).dp)),
+        Modifier.border((1.5f * scale).dp, tint, RoundedCornerShape((2.5f * scale).dp))
+            .padding(horizontal = (3 * scale).dp, vertical = (1.5f * scale).dp),
         contentAlignment = Alignment.Center,
     ) {
         Text("LIVE", fontSize = (8.5f * scale).sp, lineHeight = (9 * scale).sp, fontWeight = FontWeight.Bold, color = tint,
@@ -181,6 +182,7 @@ internal fun PlayerInfoPanel(
     val nowProg = epg.at(channel, now)
     val nextProg = epg.nextAfter(channel, nowProg?.end ?: now)
     val tilesFocus = remember { FocusRequester() }
+    val tileRow = rememberLazyListState()
     val playFocus = remember { FocusRequester() }
     var lastKey by remember { mutableIntStateOf(0) }
 
@@ -189,6 +191,11 @@ internal fun PlayerInfoPanel(
         // Hide after a while without key presses, like TiviMate.
         LaunchedEffect(lastKey) { delay(settings.int("player.panels_timeout").coerceAtLeast(4) * 2000L); onAction("dismiss") }
         LaunchedEffect(Unit) {
+            repeat(20) { if (runCatching { tilesFocus.requestFocus() }.isSuccess) return@LaunchedEffect; delay(30) }
+        }
+        // "Clear" takes away the recent channels (and itself): put the remote back on the first box.
+        LaunchedEffect(recent.isEmpty()) {
+            if (recent.isNotEmpty()) return@LaunchedEffect
             repeat(20) { if (runCatching { tilesFocus.requestFocus() }.isSuccess) return@LaunchedEffect; delay(30) }
         }
     }
@@ -305,10 +312,15 @@ internal fun PlayerInfoPanel(
                 }
                 LaunchedEffect(controls) {
                     if (controls) { controlsUsed = true; repeat(15) { delay(30); if (runCatching { playFocus.requestFocus() }.isSuccess) return@LaunchedEffect } }
-                    else if (controlsUsed) { delay(30); runCatching { tilesFocus.requestFocus() } }
+                    else if (controlsUsed) {
+                        // Back down to the boxes: the first box may have scrolled away, so bring it back first.
+                        runCatching { tileRow.scrollToItem(0) }
+                        repeat(20) { delay(30); if (runCatching { tilesFocus.requestFocus() }.isSuccess) return@LaunchedEffect }
+                    }
                 }
                 // TV guide · History · recent channels · Clear
                 LazyRow(
+                    state = tileRow,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.padding(top = 8.dp)
                         .onPreviewKeyEvent { e ->
@@ -486,7 +498,15 @@ internal fun PlayerChannelList(
     val dimPast = settings.bool("player.list_dim_past")
     val context = LocalContext.current
     var list by remember { mutableStateOf(queue) }
-    var title by remember { mutableStateOf(queue.getOrNull(current)?.group ?: "All channels") }
+    // The heading names what the list really holds (a whole group, Favorites, or all channels).
+    var title by remember {
+        val groupsIn = queue.map { it.group }.distinct()
+        mutableStateOf(when {
+            groupsIn.size == 1 -> groupsIn[0]
+            queue.isNotEmpty() && queue.size < allChannels.size && queue.all { it.id in favorites } -> "Favorites"
+            else -> "All channels"
+        })
+    }
     var focusedIdx by remember { mutableIntStateOf(current.coerceAtLeast(0)) }
     var groupsOpen by remember { mutableStateOf(startWithGroups) }
     var scheduleFor by remember { mutableStateOf<Channel?>(null) }
@@ -523,6 +543,8 @@ internal fun PlayerChannelList(
         val g = hoverGroup ?: return@LaunchedEffect
         if (g == title) return@LaunchedEffect
         delay(140)
+        // The groups were closed meanwhile: leave the list the remote is on alone.
+        if (!groupsOpen) return@LaunchedEffect
         val chosen = withContext(Dispatchers.Default) {
             when (g) {
                 "Favorites" -> allChannels.filter { it.id in favorites }
@@ -531,6 +553,7 @@ internal fun PlayerChannelList(
             }
         }
         val at = chosen.indexOfFirst { it.id == playingId }.coerceAtLeast(0)
+        if (!groupsOpen) return@LaunchedEffect
         list = chosen; title = g; focusedIdx = at
         runCatching { state.scrollToItem((at - 4).coerceAtLeast(0)) }
     }
