@@ -391,7 +391,11 @@ private fun AppRoot(settings: AppSettings, onFinish: () -> Unit) {
                 val top = stack.last()
                 if (top is Screen.Player) {
                     val on = com.novatv.app.ui.PlayerResume.at?.takeIf { com.novatv.app.ui.PlayerResume.from == top.channelId }
-                    if (on != null) stack[stack.lastIndex] = Screen.Player(on)
+                    if (on != null) {
+                        stack[stack.lastIndex] = Screen.Player(on)
+                        com.novatv.app.ui.PlayerResume.keptQueue = app.playQueue
+                        com.novatv.app.ui.PlayerResume.keptFor = on
+                    }
                 }
                 app.playQueue = app.playlists.channels.value
                 push(Screen.Player(ch.id))
