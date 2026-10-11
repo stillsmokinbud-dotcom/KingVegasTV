@@ -28,6 +28,11 @@ object DataKeys {
     const val LAST_CHANNEL = "data.last_channel"
     const val MENU_ORDER = "data.menu_order"
     const val LAST_GROUP = "data.last_group"
+    // Channel organization (Premium): see playlist/ChannelEdits.kt
+    const val HIDDEN_CHANNELS = "data.hidden_channels"
+    const val CHANNEL_NAMES = "data.channel_names"
+    const val CHANNEL_ORDER = "data.channel_order"
+    const val CUSTOM_GROUPS = "data.custom_groups"
 }
 
 /** Typed, read-only view of all settings, with schema defaults filled in. */
