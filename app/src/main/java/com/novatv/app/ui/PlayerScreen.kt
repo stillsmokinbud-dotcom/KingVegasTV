@@ -111,7 +111,9 @@ fun PlayerScreen(
     // Sleep timer: an app-wide deadline (keeps counting in the guide too); when it's up the app closes.
     var sleepMinutes by remember {
         val def = settings.str("playback.sleep_default").toIntOrNull() ?: 0
-        if (app.sleepAt == 0L && def > 0) app.sleepAt = System.currentTimeMillis() + def * 60_000L
+        // The default timer starts once per app start (turning it Off stays off when the player opens again).
+        if (app.sleepAt == 0L && def > 0 && !PlayerResume.sleepArmed) app.sleepAt = System.currentTimeMillis() + def * 60_000L
+        PlayerResume.sleepArmed = true
         mutableIntStateOf(if (app.sleepAt > 0L) ((app.sleepAt - System.currentTimeMillis()) / 60_000L).toInt().coerceAtLeast(1) else 0)
     }
     var isPlaying by remember { mutableStateOf(false) }
@@ -300,8 +302,12 @@ fun PlayerScreen(
                 val prog = epg.at(channel, System.currentTimeMillis())
                 val url = prog?.let { com.novatv.app.premium.Catchup.url(channel, it.start, it.end) }
                 if (prog != null && url != null) playUrl("${channel.name} · ${prog.title}", url)
-                else error = if (prog == null) "No TV guide info for this program, so it can't be restarted."
-                    else "This channel doesn't offer catch-up."
+                else {
+                    val msg = if (prog == null) "No TV guide info for this program, so it can't be restarted."
+                        else "This channel doesn't offer catch-up."
+                    error = msg
+                    scope.launch { delay(3500); if (error == msg) error = null }
+                }
             }
             "go_live" -> { if (player.playbackState == Player.STATE_IDLE) player.prepare(); player.seekToDefaultPosition(); player.play() }
             "search" -> onNavigate(MenuDest.SEARCH)
@@ -886,4 +892,6 @@ private fun PlayerClock(settings: AppSettings) {
 internal object PlayerResume {
     var from: String? = null
     var at: String? = null
+    /** The "Sleep timer" default has been started for this app run. */
+    var sleepArmed = false
 }
