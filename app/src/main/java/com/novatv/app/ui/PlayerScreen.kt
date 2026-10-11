@@ -87,7 +87,12 @@ fun PlayerScreen(
     val app = context.app
     val repo = app.playlists
     val scope = rememberCoroutineScope()
-    var queue by remember { mutableStateOf(app.playQueue) }
+    // Back from a reminder's channel: carry on in the category you were watching (Up/Down stay inside it).
+    var queue by remember {
+        val kept = PlayerResume.keptQueue?.takeIf { PlayerResume.keptFor == startChannelId && it.any { c -> c.id == startChannelId } }
+        if (kept != null) { app.playQueue = kept; PlayerResume.keptQueue = null; PlayerResume.keptFor = null }
+        mutableStateOf(kept ?: app.playQueue)
+    }
     if (queue.isEmpty()) {
         LaunchedEffect(Unit) { onExit() }
         return
@@ -892,6 +897,9 @@ private fun PlayerClock(settings: AppSettings) {
 internal object PlayerResume {
     var from: String? = null
     var at: String? = null
+    /** The category list to go back to after a reminder's channel (and the channel it belongs to). */
+    var keptQueue: List<com.novatv.app.playlist.Channel>? = null
+    var keptFor: String? = null
     /** The "Sleep timer" default has been started for this app run. */
     var sleepArmed = false
 }
