@@ -238,6 +238,8 @@ class PlaylistRepository(
         }
 
         var channels = all.map { if (prefixes.isEmpty() && suffixes.isEmpty()) it else it.copy(name = clean(it.name)) }
+        // The user's own changes: renamed channels, hidden channels.
+        channels = ChannelEdits.apply(channels, s)
         channels = when (s.effective("channels.sort")) {
             "name" -> channels.sortedBy { it.name.lowercase() }
             "date_added" -> {
@@ -283,10 +285,14 @@ class PlaylistRepository(
                     .associate { it.key to it.value }
             }
         }
+        val manualOrder = s.effective("channels.sort") == "playlist"
+        val orders = ChannelEdits.orders(s)
         val grouped = groupedMap
             .filter { (g, _) -> showHidden || g !in hiddenGroups }
             .map { (g, list) ->
-                val numbered = if (numbering == "per_group") list.mapIndexed { i, c -> c.copy(number = i + 1) } else list
+                // Channels moved by hand (only while sorting follows the playlist's order).
+                val placed = if (manualOrder) ChannelEdits.ordered(g, list, s, orders) else list
+                val numbered = if (numbering == "per_group") placed.mapIndexed { i, c -> c.copy(number = i + 1) } else placed
                 ChannelGroup(g, numbered, locked = isLocked(g, list))
             }
             .filterNot { hideLocked && it.locked }
@@ -300,6 +306,10 @@ class PlaylistRepository(
             val rec = recent.mapNotNull { byId[it] }.take(s.int("general.recent_count"))
             if (rec.isNotEmpty()) result += ChannelGroup("Recently watched", rec)
         }
+        // The user's own categories, right after Favorites / Recently watched. Only channels that are shown
+        // anyway (never a channel from a hidden or locked group).
+        val shownById = grouped.filterNot { it.locked }.flatMap { it.channels }.associateBy { it.id }
+        result += ChannelEdits.customGroups(s).map { (name, ids) -> ChannelGroup(name, ids.mapNotNull { shownById[it] }) }
         if (s.bool("channels.show_all_group")) {
             var visible = grouped.filterNot { it.locked }.flatMap { it.channels }
             // Channels › "Group channels by playlists in All playlists category"
