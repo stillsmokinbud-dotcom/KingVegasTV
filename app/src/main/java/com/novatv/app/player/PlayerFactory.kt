@@ -29,6 +29,7 @@ class PlayerFactory(private val context: Context, private val baseHttp: OkHttpCl
     class Built(val player: ExoPlayer, val dataSource: OkHttpDataSource.Factory)
 
     fun create(s: AppSettings, userAgent: String): Built {
+        AudioSync.offsetMs = s.int("playback.audio_offset").coerceIn(-2000, 2000)
         val timeoutS = s.int("playback.timeout").toLong().coerceAtLeast(5)
         val http = baseHttp.newBuilder()
             .connectTimeout(timeoutS, TimeUnit.SECONDS)
@@ -42,14 +43,14 @@ class PlayerFactory(private val context: Context, private val baseHttp: OkHttpCl
         val renderers = object : DefaultRenderersFactory(context) {
             override fun buildAudioSink(
                 context: Context, enableFloatOutput: Boolean, enableAudioTrackPlaybackParams: Boolean,
-            ): androidx.media3.exoplayer.audio.AudioSink? =
+            ): androidx.media3.exoplayer.audio.AudioSink? = AudioSync.Sink(
                 androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
                     .setAudioCapabilities(
                         if (passthrough) androidx.media3.exoplayer.audio.AudioCapabilities.getCapabilities(context)
                         else androidx.media3.exoplayer.audio.AudioCapabilities.DEFAULT_AUDIO_CAPABILITIES)
                     .setEnableFloatOutput(enableFloatOutput)
                     .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
-                    .build()
+                    .build())
         }
             .setEnableDecoderFallback(true)
             .setMediaCodecSelector(codecSelector(s.str("playback.decoder"), s.str("playback.audio_decoder")))
@@ -188,6 +189,22 @@ class PlayerFactory(private val context: Context, private val baseHttp: OkHttpCl
             // Live streams: let the player fall behind a little instead of stalling.
             b.setLiveConfiguration(MediaItem.LiveConfiguration.Builder().setMinPlaybackSpeed(1f).setMaxPlaybackSpeed(1f).build())
             return b.build()
+        }
+    }
+}
+
+/**
+ * Audio sync (player menu › Audio offset): moves the sound against the picture. The picture follows the
+ * sound's clock, so the clock is reported a little ahead (sound later) or behind (sound earlier).
+ * Positive = the sound comes later; negative = earlier.
+ */
+object AudioSync {
+    @Volatile var offsetMs: Int = 0
+
+    class Sink(sink: androidx.media3.exoplayer.audio.AudioSink) : androidx.media3.exoplayer.audio.ForwardingAudioSink(sink) {
+        override fun getCurrentPositionUs(sourceEnded: Boolean): Long {
+            val p = super.getCurrentPositionUs(sourceEnded)
+            return if (p == androidx.media3.exoplayer.audio.AudioSink.CURRENT_POSITION_NOT_SET) p else p + offsetMs * 1000L
         }
     }
 }
