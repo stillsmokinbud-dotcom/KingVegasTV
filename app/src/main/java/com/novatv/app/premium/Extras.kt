@@ -109,6 +109,10 @@ data class Recording(
     val state: String = "scheduled",
     val bytes: Long = 0,
     val error: String? = null,
+    /** Recurring recording: "" (once), "daily", "weekdays" or "weekly". */
+    val repeat: String = "",
+    /** All recordings of one recurring series share this (the first one's id). */
+    val series: String = "",
 )
 
 /**
@@ -158,7 +162,7 @@ class RecordingManager(
     fun isRecording(channelId: String) = _items.value.any { it.channelId == channelId && it.state == "recording" }
 
     /** Record [channel] from [start] (now if in the past) until [end]. */
-    fun schedule(channel: Channel, title: String, startAt: Long, endAt: Long): Recording {
+    fun schedule(channel: Channel, title: String, startAt: Long, endAt: Long, repeat: String = ""): Recording {
         // Settings › Other › Recording › start earlier / stop later (only for scheduled programs, not "record now").
         val s = (context.applicationContext as? com.novatv.app.App)?.lastSettings
         val now0 = System.currentTimeMillis()
@@ -167,16 +171,49 @@ class RecordingManager(
         val id = "r" + System.currentTimeMillis()
         val safe = title.replace(Regex("""[^\w\- ]"""), "").take(40).ifBlank { "Recording" }
         val stamp = SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date(maxOf(start, System.currentTimeMillis())))
-        val r = Recording(id, channel.id, channel.name, title, start, end, File(folder, "$safe-$stamp-$id.ts").absolutePath)
+        val r = Recording(id, channel.id, channel.name, title, start, end, File(folder, "$safe-$stamp-$id.ts").absolutePath,
+            repeat = repeat, series = if (repeat.isNotEmpty()) id else "")
         put(r)
-        if (start <= System.currentTimeMillis()) begin(r)
+        if (start <= System.currentTimeMillis()) { scheduleNext(r); begin(r) }
         return r
+    }
+
+    /** Recurring: the next one in the series (same time of day; weekdays skip Saturday and Sunday). */
+    private fun scheduleNext(r: Recording) {
+        if (r.repeat.isEmpty()) return
+        val now = System.currentTimeMillis()
+        val cal = java.util.Calendar.getInstance().apply { timeInMillis = r.start }
+        val length = r.end - r.start
+        do {
+            cal.add(java.util.Calendar.DAY_OF_YEAR, if (r.repeat == "weekly") 7 else 1)
+            val day = cal.get(java.util.Calendar.DAY_OF_WEEK)
+            val weekend = day == java.util.Calendar.SATURDAY || day == java.util.Calendar.SUNDAY
+        } while (cal.timeInMillis + length <= now || (r.repeat == "weekdays" && weekend))
+        val start = cal.timeInMillis
+        if (_items.value.any { it.series == r.series && it.start == start }) return
+        val id = "r" + System.nanoTime()
+        val safe = r.title.replace(Regex("""[^\w\- ]"""), "").take(40).ifBlank { "Recording" }
+        val stamp = SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date(start))
+        put(r.copy(id = id, start = start, end = start + length, path = File(folder, "$safe-$stamp-$id.ts").absolutePath,
+            state = "scheduled", bytes = 0, error = null))
+    }
+
+    /** Recurring: cancel the upcoming ones of this series (recordings already made stay). */
+    fun stopRepeating(series: String) {
+        if (series.isEmpty()) return
+        _items.value.filter { it.series == series && it.state == "scheduled" }.forEach { delete(it.id) }
+        synchronized(this) {
+            val list = _items.value.map { if (it.series == series) it.copy(repeat = "") else it }
+            _items.value = list
+            runCatching { file.writeText(json.encodeToString(ser, list)) }
+        }
     }
 
     /** Called every few seconds by the app: starts scheduled recordings that are due. */
     fun tick() {
         val now = System.currentTimeMillis()
         _items.value.filter { it.state == "scheduled" && it.start <= now }.forEach {
+            scheduleNext(it)
             if (it.end <= now) update(it.id) { r -> r.copy(state = "failed", error = "The app wasn't running at the start time") }
             else begin(it)
         }
