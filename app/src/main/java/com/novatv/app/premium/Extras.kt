@@ -126,7 +126,8 @@ class RecordingManager(
     private val ser = ListSerializer(Recording.serializer())
     private val _items = MutableStateFlow(load())
     val items: StateFlow<List<Recording>> = _items.asStateFlow()
-    private val jobs = mutableMapOf<String, Job>()
+    // Touched from the main thread and from the recording threads.
+    private val jobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
 
     /** Settings › Other › Recording › Recordings folder (falls back to the app's own folder if it can't be written). */
     val folder: File get() {
@@ -166,7 +167,7 @@ class RecordingManager(
         val id = "r" + System.currentTimeMillis()
         val safe = title.replace(Regex("""[^\w\- ]"""), "").take(40).ifBlank { "Recording" }
         val stamp = SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date(maxOf(start, System.currentTimeMillis())))
-        val r = Recording(id, channel.id, channel.name, title, start, end, File(folder, "$safe-$stamp.ts").absolutePath)
+        val r = Recording(id, channel.id, channel.name, title, start, end, File(folder, "$safe-$stamp-$id.ts").absolutePath)
         put(r)
         if (start <= System.currentTimeMillis()) begin(r)
         return r
@@ -182,8 +183,9 @@ class RecordingManager(
     }
 
     fun stop(id: String) {
-        jobs.remove(id)?.cancel()
+        // Marked "stopped" first, so the ending job can't label it "done" or "failed".
         update(id) { if (it.state == "recording" || it.state == "scheduled") it.copy(state = "stopped") else it }
+        jobs.remove(id)?.cancel()
     }
 
     fun delete(id: String) {
@@ -217,8 +219,12 @@ class RecordingManager(
                 }
             }
             try {
+                // Same User-Agent and address handling as the live picture.
+                val appSettings = (context.applicationContext as? com.novatv.app.App)?.lastSettings
+                    ?: com.novatv.app.settings.AppSettings(emptyMap())
                 val ua = channel.userAgent?.takeIf { it.isNotBlank() }
-                    ?: playlists.userAgentFor(playlists.playlistFor(channel), com.novatv.app.settings.AppSettings(emptyMap()))
+                    ?: playlists.userAgentFor(playlists.playlistFor(channel), appSettings)
+                val streamUrl = com.novatv.app.player.PlayerFactory.viaUdpProxy(channel.url, appSettings)
                 val client = playlists.http.newBuilder().readTimeout(30, java.util.concurrent.TimeUnit.SECONDS).build()
                 File(r.path).parentFile?.mkdirs()
                 File(r.path).outputStream().buffered(256 * 1024).use { out ->
@@ -229,7 +235,7 @@ class RecordingManager(
                     while (isActive && System.currentTimeMillis() < r.end && failures < 20) {
                         val before = written
                         try {
-                            val req = Request.Builder().url(channel.url).header("User-Agent", ua).build()
+                            val req = Request.Builder().url(streamUrl).header("User-Agent", ua).build()
                             client.newCall(req).execute().use { resp ->
                                 if (!resp.isSuccessful) throw java.io.IOException("Server returned ${resp.code}")
                                 val body = resp.body ?: throw java.io.IOException("The server sent nothing")
@@ -277,7 +283,7 @@ class RecordingManager(
                         error = if (e is kotlinx.coroutines.CancellationException) null else e.message)
                 }
             } finally {
-                jobs.remove(r.id)
+                coroutineContext[Job]?.let { jobs.remove(r.id, it) }
             }
         }
     }
@@ -307,7 +313,11 @@ class RecordingManager(
                 }
             }
             url = resolve(url, best ?: throw CantRecord("No stream found for this channel"))
-            text = get(url).use { if (!it.isSuccessful) throw java.io.IOException("Server returned ${it.code}"); it.body?.string().orEmpty() }
+            text = get(url).use {
+                if (!it.isSuccessful) throw java.io.IOException("Server returned ${it.code}")
+                url = it.request.url.toString() // after a redirect, pieces are found relative to the new address
+                it.body?.string().orEmpty()
+            }
         }
         var first = seen.isEmpty()
         var idle = 0
@@ -318,12 +328,15 @@ class RecordingManager(
             val lines = text.lines().map { it.trim() }
             val target = Regex("""#EXT-X-TARGETDURATION:(\d+)""").find(text)?.groupValues?.get(1)?.toLongOrNull() ?: 6L
             val pieces = lines.filter { it.isNotEmpty() && !it.startsWith("#") }.map { resolve(url, it) }
+            // Each piece's own number when the list gives one (addresses can change between refreshes), otherwise its full address.
+            val firstNo = Regex("""#EXT-X-MEDIA-SEQUENCE:(\d+)""").find(text)?.groupValues?.get(1)?.toLongOrNull()
+            val keyOf: (Int, String) -> String = { i, u -> if (firstNo != null) "#${firstNo + i}" else u }
             // Start at "now": skip what was already in the list, except the last two pieces.
-            if (first) { first = false; if (!text.contains("#EXT-X-ENDLIST")) pieces.dropLast(2).forEach { seen += it.substringBefore('?') } }
+            if (first) { first = false; if (!text.contains("#EXT-X-ENDLIST")) pieces.dropLast(2).forEachIndexed { i, u -> seen += keyOf(i, u) } }
             var got = false
-            for (p in pieces) {
+            for ((i, p) in pieces.withIndex()) {
                 if (!currentCoroutineContext().isActive || System.currentTimeMillis() >= end) break
-                if (!seen.add(p.substringBefore('?'))) continue
+                if (!seen.add(keyOf(i, p))) continue
                 get(p).use { resp ->
                     if (!resp.isSuccessful) throw java.io.IOException("Server returned ${resp.code}")
                     val input = resp.body?.byteStream() ?: throw java.io.IOException("The server sent nothing")
@@ -341,7 +354,11 @@ class RecordingManager(
             idle = if (got) 0 else idle + 1
             if (idle > 20) throw java.io.IOException("The channel stopped sending")
             kotlinx.coroutines.delay((target * 500).coerceIn(1000, 6000))
-            text = get(url).use { if (!it.isSuccessful) throw java.io.IOException("Server returned ${it.code}"); it.body?.string().orEmpty() }
+            text = get(url).use {
+                if (!it.isSuccessful) throw java.io.IOException("Server returned ${it.code}")
+                url = it.request.url.toString()
+                it.body?.string().orEmpty()
+            }
         }
         return false
     }
