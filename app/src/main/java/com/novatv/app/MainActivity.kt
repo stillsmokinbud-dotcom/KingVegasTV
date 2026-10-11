@@ -158,7 +158,8 @@ class MainActivity : ComponentActivity() {
             // running (at most 8 seconds), so the fade goes straight into moving video with nothing jumping.
             kotlinx.coroutines.delay(1800)
             var waited = 1800
-            while (waited < 8000 && !app.shared.hasPicture) { kotlinx.coroutines.delay(100); waited += 100 }
+            // Nothing loading by 3 seconds (no last channel to start): don't keep the logo up for nothing.
+            while (waited < 8000 && !app.shared.hasPicture && (waited < 3000 || app.shared.busy)) { kotlinx.coroutines.delay(100); waited += 100 }
             if (app.shared.hasPicture) kotlinx.coroutines.delay(500)
             fade.animateTo(0f, androidx.compose.animation.core.tween(1600, easing = androidx.compose.animation.core.FastOutSlowInEasing))
             show = false
