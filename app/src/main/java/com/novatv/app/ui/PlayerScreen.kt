@@ -134,7 +134,9 @@ fun PlayerScreen(
     val favorites by remember(DataKeys.FAVORITES) { app.settings.listFlow(DataKeys.FAVORITES) }.collectAsState(initial = emptyList())
     val epg by app.epg.data.collectAsState()
     val rootFocus = remember { FocusRequester() }
-    val allChannels by repo.channels.collectAsState()
+    val rawChannels by repo.channels.collectAsState()
+    // Renamed / hidden channels (Channel organization) look the same here as in the guide.
+    val allChannels = remember(rawChannels, settings) { com.novatv.app.playlist.ChannelEdits.apply(rawChannels, settings) }
     val recentIds by remember(DataKeys.RECENT) { app.settings.listFlow(DataKeys.RECENT) }.collectAsState(initial = emptyList())
     val recent = remember(recentIds, allChannels) {
         val byId = allChannels.associateBy { it.id }
@@ -347,7 +349,7 @@ fun PlayerScreen(
             }
             "video_tracks" -> overlay = Overlay.VIDEO
             "audio_tracks" -> overlay = Overlay.AUDIO
-            "audio_offset" -> overlay = Overlay.OFFSET
+            "audio_offset" -> premiumOr("Audio sync") { overlay = Overlay.OFFSET }
             "captions" -> overlay = Overlay.CAPTIONS
             "display_mode" -> overlay = Overlay.ASPECT
             "sleep_timer" -> overlay = Overlay.SLEEP
@@ -613,7 +615,7 @@ fun PlayerScreen(
                     val ch = when (f.channelCount) { 1 -> "mono"; 2 -> "stereo"; 6 -> "5.1 surround sound"; 8 -> "7.1 surround sound"; else -> "" }
                     if (ch.isEmpty()) lang else "$lang\n$ch"
                 }),
-                "audio_offset" to "0 ms",
+                "audio_offset" to com.novatv.app.player.AudioSync.offsetMs.let { if (it > 0) "+$it ms" else "$it ms" },
                 "captions" to (if (player.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)) "Off" else "On"),
                 "display_mode" to when (aspect) { "fill" -> "Stretch"; "zoom" -> "Zoom"; "16_9" -> "16:9"; "4_3" -> "4:3"; else -> "Normal" },
                 "sleep_timer" to (if (sleepMinutes > 0) "$sleepMinutes min" else "Off"),
@@ -622,7 +624,7 @@ fun PlayerScreen(
             val savedOrder by remember(DataKeys.MENU_ORDER) { app.settings.listFlow(DataKeys.MENU_ORDER) }.collectAsState(initial = emptyList())
             val ids = PLAYER_MENU_BUTTONS.map { it.first }
             val order = savedOrder.filter { it in ids } + ids.filter { it !in savedOrder }
-            val buttons = order.filter { it != "audio_offset" && settings.bool("player.btn.$it") }.map { id ->
+            val buttons = order.filter { settings.bool("player.btn.$it") }.map { id ->
                 id to (labels[id] ?: PLAYER_MENU_BUTTONS.first { it.first == id }.second)
             }
             PlayerMenuRow(buttons, ::menuButtonIcon, header = channel.group to dateTimeText(System.currentTimeMillis(), settings, context),
@@ -639,10 +641,39 @@ fun PlayerScreen(
             val p = epg.at(channel, System.currentTimeMillis())
             MessageDialog(p?.title ?: channel.name, p?.desc?.ifBlank { null } ?: "No description") { overlay = Overlay.NONE }
         }
+        // Video quality: Auto, or one of the qualities the channel offers (HLS channels often have several).
         Overlay.VIDEO -> {
             val v = player.videoFormat
-            MessageDialog("Video tracks", if (v == null) "No video" else "${v.width}x${v.height}" +
-                (v.frameRate.takeIf { it > 0 }?.let { " · %.2f fps".format(it) } ?: "") + " · ${v.sampleMimeType ?: ""}") { overlay = Overlay.NONE }
+            val groups = player.currentTracks.groups.filter { it.type == C.TRACK_TYPE_VIDEO }
+            val options = groups.flatMapIndexed { gi, g ->
+                (0 until g.length).filter { g.isTrackSupported(it) }.map { ti ->
+                    val f = g.getTrackFormat(ti)
+                    Triple("$gi:$ti", f.height, listOfNotNull(
+                        if (f.height > 0) "${f.height}p" else if (f.width > 0) "${f.width} wide" else null,
+                        f.frameRate.takeIf { it > 0 }?.let { "%.0f fps".format(it) },
+                        f.bitrate.takeIf { it > 0 }?.let { "%.1f Mbps".format(it / 1_000_000f) },
+                    ).joinToString(" · ").ifBlank { "Quality ${ti + 1}" })
+                }
+            }.sortedByDescending { it.second }
+            if (options.size <= 1) MessageDialog("Video tracks", if (v == null) "No video" else "${v.width}x${v.height}" +
+                (v.frameRate.takeIf { it > 0 }?.let { " · %.2f fps".format(it) } ?: "") + " · ${v.sampleMimeType ?: ""}" +
+                "\n\nThis channel offers only one quality.") { overlay = Overlay.NONE }
+            else {
+                val overridden = player.trackSelectionParameters.overrides.keys.any { it.type == C.TRACK_TYPE_VIDEO }
+                val current = if (!overridden) "auto" else groups.withIndex().firstNotNullOfOrNull { (gi, g) ->
+                    (0 until g.length).firstOrNull { g.isTrackSelected(it) }?.let { "$gi:$it" } } ?: "auto"
+                ChoiceDialog("Video quality", listOf("auto" to "Auto (best for your connection)") + options.map { it.first to it.third },
+                    current, { overlay = Overlay.NONE }) { pick ->
+                    val b = player.trackSelectionParameters.buildUpon()
+                    if (pick == "auto") b.clearOverridesOfType(C.TRACK_TYPE_VIDEO)
+                    else {
+                        val (gi, ti) = pick.split(':').map { it.toInt() }
+                        b.setOverrideForType(TrackSelectionOverride(groups[gi].mediaTrackGroup, ti))
+                    }
+                    player.trackSelectionParameters = b.build()
+                    overlay = Overlay.NONE
+                }
+            }
         }
         Overlay.CAPTIONS -> {
             val off = player.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)
@@ -660,7 +691,23 @@ fun PlayerScreen(
                 overlay = Overlay.NONE
             }
         }
-        Overlay.OFFSET -> MessageDialog("Audio offset", "Audio offset adjustment is coming in a later update.") { overlay = Overlay.NONE }
+        // Audio sync: sound earlier (-) or later (+) than the picture, in 50 ms steps. Remembered for next time.
+        Overlay.OFFSET -> {
+            val steps = (-1000..1000 step 50).map { ms ->
+                ms.toString() to when {
+                    ms == 0 -> "0 ms (no change)"
+                    ms > 0 -> "+$ms ms · sound later"
+                    else -> "$ms ms · sound earlier"
+                }
+            }
+            val now = (com.novatv.app.player.AudioSync.offsetMs / 50 * 50).coerceIn(-1000, 1000).toString()
+            ChoiceDialog("Audio offset", steps, now, { overlay = Overlay.NONE }) {
+                val ms = it.toInt()
+                com.novatv.app.player.AudioSync.offsetMs = ms
+                scope.launch { app.settings.set("playback.audio_offset", ms.toString()) }
+                overlay = Overlay.NONE
+            }
+        }
         Overlay.AUDIO -> {
             val groups = player.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
             val current = groups.withIndex().firstNotNullOfOrNull { (gi, g) -> (0 until g.length).firstOrNull { g.isTrackSelected(it) }?.let { "$gi:$it" } }
