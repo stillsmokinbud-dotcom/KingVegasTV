@@ -37,6 +37,14 @@ class EpgRepository(
     val status: StateFlow<String?> = _status.asStateFlow()
 
     private val lock = Mutex()
+    @Volatile private var lastAttempt = 0L
+
+    /** When most channels' guide runs out (the middle of the channels' last program end times). */
+    private fun coverageEnd(d: EpgData): Long {
+        val ends = d.byId.values.mapNotNull { l -> l.maxOfOrNull { it.end } }
+        if (ends.isEmpty()) return 0L
+        return ends.sorted()[ends.size / 2]
+    }
     private val cacheFile get() = File(context.filesDir, "epg_cache.bin")
 
     suspend fun loadCache() = withContext(Dispatchers.IO) {
@@ -52,8 +60,16 @@ class EpgRepository(
     suspend fun updateIfDue(appStart: Boolean) {
         val s = settingsRepo.current()
         val hours = s.str("epg.update_interval").toIntOrNull() ?: 0
-        val age = System.currentTimeMillis() - _data.value.updated
-        val due = (hours > 0 && age > hours * 3_600_000L) || _data.value.isEmpty
+        val now = System.currentTimeMillis()
+        val age = now - _data.value.updated
+        // Also due when the guide is about to run out (less than 12 hours of programs left for most channels),
+        // so the information never disappears while the app stays open for days.
+        val runningOut = withContext(Dispatchers.Default) { coverageEnd(_data.value) } < now + 12 * 3_600_000L
+        // (A source that only ever sends a short guide isn't downloaded again more than every 3 hours for this.)
+        val due = (hours > 0 && age > hours * 3_600_000L) || _data.value.isEmpty || (runningOut && age > 3 * 3_600_000L)
+        // Not more often than every 30 minutes when it keeps failing.
+        if (due && !appStart && now - lastAttempt < 30 * 60_000L) return
+        lastAttempt = now
         if ((appStart && s.bool("epg.update_on_start")) || due) update(skipIfNewerThanMs = 10 * 60_000L)
     }
 
@@ -99,7 +115,22 @@ class EpgRepository(
                 return@withContext Result.failure(IOException(errors.joinToString("\n")))
             }
 
-            val result = EpgData(parser.finish(), HashMap(parser.nameToId), now, HashMap(parser.icons))
+            // Keep what we already had for channels this download didn't bring (a source that failed or sent a
+            // short list), so their information doesn't vanish; new programs replace old ones channel by channel.
+            val fresh = parser.finish()
+            val old = _data.value
+            val keepFrom = now - maxOf(1, s.int("epg.past_days")) * 86_400_000L
+            val byId = HashMap<String, List<Program>>()
+            old.byId.forEach { (id, list) ->
+                if (id !in fresh) list.filter { it.end > keepFrom }.takeIf { it.isNotEmpty() }?.let { byId[id] = it }
+            }
+            byId.putAll(fresh)
+            if (byId.isEmpty() && !old.isEmpty) {
+                settingsRepo.set(KEY_LAST_STATUS, "EPG update on $stamp brought no programs; kept the previous guide")
+                return@withContext Result.failure(IOException("The TV guide source sent no programs. The previous guide was kept."))
+            }
+            val result = EpgData(byId, HashMap(old.nameToId).apply { putAll(parser.nameToId) }, now,
+                HashMap(old.icons).apply { putAll(parser.icons) })
             runCatching { writeIcons(result.icons) }
             _data.value = result
             settingsRepo.set(KEY_LAST_STATUS, "EPG is successfully updated for ${result.byId.size} channels on $stamp")
