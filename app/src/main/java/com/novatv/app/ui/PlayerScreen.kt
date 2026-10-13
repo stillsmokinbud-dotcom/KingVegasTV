@@ -200,7 +200,10 @@ fun PlayerScreen(
     // on errors, when the server closes the stream, when loading hangs and when the picture freezes.
     DisposableEffect(Unit) {
         // Only the reconnect message is taken away again (not "Stopped", a recording note…).
-        app.shared.onReconnectChanged = { on -> if (on) error = "Reconnecting…" else if (error == "Reconnecting…") error = null }
+        app.shared.onReconnectChanged = { on ->
+            if (on) error = app.shared.reconnectMessage()
+            else if (error == "Reconnecting…" || error?.startsWith("Channel not responding") == true) error = null
+        }
         onDispose { app.shared.onReconnectChanged = null }
     }
 
@@ -244,7 +247,7 @@ fun PlayerScreen(
         val listener = object : Player.Listener {
             override fun onPlayerError(e: PlaybackException) {
                 // The shared player reconnects by itself and keeps trying (like TiviMate).
-                error = "Reconnecting…"
+                error = app.shared.reconnectMessage()
             }
 
             override fun onPlaybackStateChanged(state: Int) {
