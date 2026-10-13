@@ -277,6 +277,15 @@ private fun AppRoot(settings: AppSettings, onFinish: () -> Unit) {
             androidx.core.app.ActivityCompat.requestPermissions(act, arrayOf(perm), 11)
     }
     var dueReminder by remember { mutableStateOf<com.novatv.app.premium.Reminder?>(null) }
+    // The TV guide and playlists keep themselves up to date while the app stays open (TVs often leave it
+    // running for days): checked every 30 minutes, updated when their interval is up or the guide runs low.
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(30 * 60_000L)
+            app.appScope.launch { runCatching { app.epg.updateIfDue(appStart = false) } }
+            app.appScope.launch { runCatching { app.playlists.refreshDue(appStart = false) } }
+        }
+    }
     LaunchedEffect(Unit) {
         while (true) {
             delay(15_000)
