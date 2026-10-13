@@ -91,6 +91,13 @@ class SharedPlayback(private val context: Context, private val http: OkHttpClien
     fun markLoaded(id: String) { channelId = id; reconnectAttempts = 0; guard?.cancelPending(); setReconnecting(false) }
 
     private var reconnectAttempts = 0
+    /** What went wrong last (e.g. "server answered 403"), shown when a channel keeps failing. */
+    @Volatile private var lastProblem: String? = null
+
+    /** The message on screen while the guard is trying: plain at first, with the reason once it keeps failing. */
+    fun reconnectMessage(): String =
+        if (reconnectAttempts >= 4) "Channel not responding" + (lastProblem?.let { " ($it)" } ?: "") + " · trying again…"
+        else "Reconnecting…"
 
     private fun setReconnecting(on: Boolean) {
         if (reconnecting == on) return
@@ -143,7 +150,10 @@ class SharedPlayback(private val context: Context, private val http: OkHttpClien
                 // Not if the user paused / stopped meanwhile, or the player was replaced.
                 if (stopped || channelId == null || !p.playWhenReady) { setReconnecting(false); return@Runnable }
                 runCatching {
-                    p.seekToDefaultPosition()
+                    // Open the channel's own address again (like changing channel and back). Re-preparing alone keeps the
+                    // address the server redirected to, and those links often expire after a few minutes, so every
+                    // retry was refused while a fresh start (or another app) played fine.
+                    p.currentMediaItem?.let { p.setMediaItem(it) }
                     p.prepare()
                     p.playWhenReady = true
                 }
@@ -158,6 +168,10 @@ class SharedPlayback(private val context: Context, private val http: OkHttpClien
         }
 
         override fun onPlayerError(error: PlaybackException) {
+            lastProblem = (generateSequence(error.cause as Throwable?) { it.cause }
+                .firstOrNull { it is androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException }
+                as? androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException)
+                ?.let { "server answered ${it.responseCode}" } ?: error.errorCodeName
             if (channelId == null) return
             if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) { reconnect(0); return }
             reconnect(backoff())
